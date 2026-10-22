@@ -1,0 +1,28 @@
+{
+  "apps": [
+    {
+      "id": "hoptunes",
+      "name": "HopTunes",
+      "tagline": "Zune-inspired media player",
+      "repo": "gamehopper/hoptunes",
+      "accent": "#ff5ea8",
+      "asset": ".AppImage"
+    },
+    {
+      "id": "prism-live-studio",
+      "name": "Prism Live Studio",
+      "tagline": "Linux port of the streaming studio",
+      "repo": "gamehopper/prism-live-studio-linux",
+      "accent": "#7a5cff",
+      "asset": ".AppImage"
+    },
+    {
+      "id": "hopterm",
+      "name": "HopTerm",
+      "tagline": "My own terminal app",
+      "repo": "gamehopper/hopterm",
+      "accent": "#2ee6a6",
+      "asset": ".AppImage"
+    }
+  ]
+}
