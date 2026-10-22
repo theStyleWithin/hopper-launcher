@@ -1,8 +1,8 @@
 {
   "apps": [
     {
-      "id": "hoppercast",
-      "name": "HopperCast",
+      "id": "hopcast",
+      "name": "HopCast",
       "tagline": "Final touches in progress",
       "repo": "gamehopper/hoppercast",
       "accent": "#7a5cff",
