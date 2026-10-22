@@ -19,7 +19,7 @@
     {
       "id": "hop-tunes",
       "name": "HopTunes",
-      "tagline": "Your Zune, back on Linux",
+      "tagline": "Sleek, minimalist media player",
       "repo": "gamehopper/Hop-tunes",
       "accent": "#ff5ea8",
       "asset": ".AppImage"
