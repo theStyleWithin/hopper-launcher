@@ -1,27 +1,27 @@
 {
   "apps": [
     {
-      "id": "hoptunes",
-      "name": "HopTunes",
-      "tagline": "Zune-inspired media player",
-      "repo": "gamehopper/hoptunes",
-      "accent": "#ff5ea8",
-      "asset": ".AppImage"
-    },
-    {
-      "id": "prism-live-studio",
-      "name": "Prism Live Studio",
-      "tagline": "Linux port of the streaming studio",
-      "repo": "gamehopper/prism-live-studio-linux",
+      "id": "hoppercast",
+      "name": "HopperCast",
+      "tagline": "Final touches in progress",
+      "repo": "gamehopper/hoppercast",
       "accent": "#7a5cff",
       "asset": ".AppImage"
     },
     {
-      "id": "hopterm",
-      "name": "HopTerm",
-      "tagline": "My own terminal app",
-      "repo": "gamehopper/hopterm",
+      "id": "alias-maker",
+      "name": "Alias Maker",
+      "tagline": "Mario Maker for terminal commands",
+      "repo": "gamehopper/Alias-maker",
       "accent": "#2ee6a6",
+      "asset": ".AppImage"
+    },
+    {
+      "id": "hop-tunes",
+      "name": "HopTunes",
+      "tagline": "Your Zune, back on Linux",
+      "repo": "gamehopper/Hop-tunes",
+      "accent": "#ff5ea8",
       "asset": ".AppImage"
     }
   ]
