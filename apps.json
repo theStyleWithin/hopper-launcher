@@ -3,7 +3,7 @@
     {
       "id": "hopcast",
       "name": "HopCast",
-      "tagline": "Final touches in progress",
+      "tagline": "Bloat-free, easy livestreaming",
       "repo": "gamehopper/hoppercast",
       "accent": "#7a5cff",
       "asset": ".AppImage"
