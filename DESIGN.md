@@ -79,6 +79,18 @@ crash on start (sudo make music and Alias Maker did exactly this). So the launch
 only what points into its own AppImage, keeps everything that came from the system, and
 does the same before opening a web link. When the launcher is not an AppImage, nothing is changed.
 
+## Download counts
+A neon-green chip on the top edge of each tile ("▼ 3,071"), so no tile changes size. It is one exact total per
+app: the sum of GitHub's public `download_count` over every program file (AppImage, installer, zip, APK, console
+builds ...) of every release, all systems together. Checksum files, debug builds, source tarballs and packaging
+kits are not counted (the launcher fetches the checksum file on every install, so counting it would inflate
+the figure). GitHub's pages are followed, so a long history is counted in full. Nothing is sent and nobody is
+identified. Limits of the number: it is GitHub's figure, so it includes bots and the developer's own tests, and a
+file that is deleted and re-uploaded starts again from zero. The last reading is saved (`counts.json`) and shown
+when offline, with the time it was read in the hover note. Neon green on dark themes, a deeper green on the light
+Paper theme for contrast. A switch in Settings turns it off, and then nothing extra is requested.
+Checked against GitHub's real data: the launcher's own four releases add up to the same total as an independent sum.
+
 ## Offline, status and apps that can no longer be delivered
 **Nothing needs the internet.** Installed apps launch, settings and ordering work, and the interface never waits
 on a network call. Every web request gives up after 10 seconds, so a connection that goes nowhere can't freeze

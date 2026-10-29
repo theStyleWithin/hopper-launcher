@@ -39,6 +39,10 @@ update is available.
 
 *If an app's repository disappears and the app is not installed, its slot shows a short message instead of an install button. An app you have installed always keeps its tile and **Launch** button; it just can't update. The two small indicators in the corner show your internet and GitHub's status.*
 
+![The launcher with a small neon-green download total on each app's tile.](docs/images/download-counts.png)
+
+*Each tile shows how many times that app has been downloaded in total, across every version and every system, taken from GitHub's own public numbers. (These pictures use sample numbers.)*
+
 ![The launcher with no internet: the installed apps still show Launch, and the corner says offline.](docs/images/offline.png)
 
 *With no internet, nothing you already have stops working. The corner turns grey and the rest says so plainly.*
@@ -103,6 +107,12 @@ page says which systems it supports, and the launcher only shows the builds that
   checked against the archive's checksums (and the developer's `SHA256SUMS` when one is there). The launcher
   only contacts archive.org while this is switched on, and it never switches to it by itself.
 - Launched apps run on their own, so closing the launcher never closes them.
+- **Download counts.** A small green number on each tile shows how many times that app has been downloaded,
+  added up across every version and every system (Linux, Windows and Android all count toward one total). It
+  uses GitHub's own public download numbers, so nothing is sent and nobody is identified. Checksum, debug and
+  source files are not counted. It is GitHub's figure, so it includes anyone who downloaded by any means, and
+  if a release file is ever deleted and re-uploaded its count starts again. The last number is kept for when
+  you are offline, and there is a switch in Settings to hide it.
 - **Nothing needs the internet to work.** Apps you have installed launch offline, and settings, themes and
   ordering all work. Only installing, updating and browsing the backup need a connection.
 - **Status in the corner.** Two small indicators show whether you are online and whether GitHub is working

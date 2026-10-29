@@ -203,3 +203,11 @@ a.pill:hover, a.pill:focus-visible { color: var(--text); border-color: var(--acc
 /* An app that can no longer be delivered: a quiet message in its slot */
 .tile.gone { justify-content: center; align-items: center; text-align: center; border-style: dashed; background: transparent; color: var(--dim); font-size: 16px; line-height: 24px; }
 .tile.gone p { max-width: 20ch; }
+
+/* Download counter: a small neon-green chip sitting on the tile's top edge, so no tile changes size */
+:root { --neon: #39ff14; --neon-line: rgba(57, 255, 20, .55); --neon-glow: 0 0 6px rgba(57, 255, 20, .45); }
+[data-theme="paper"] { --neon: #0a7a22; --neon-line: rgba(10, 122, 34, .6); --neon-glow: none; }
+.tile { position: relative; }
+.dl { position: absolute; top: -11px; right: 16px; height: 22px; padding: 0 9px; z-index: 1; cursor: default;
+  background: var(--bg); color: var(--neon); border: 1px solid var(--neon-line); border-radius: 11px; text-shadow: var(--neon-glow);
+  font-size: 12px; line-height: 20px; letter-spacing: .3px; font-variant-numeric: tabular-nums; }

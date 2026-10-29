@@ -95,6 +95,10 @@ struct ReleaseInfo {
     builds: Vec<Build>,
     error: Option<String>,
     source: Source,
+    /// Total downloads of this app's programs, across every version and system.
+    downloads: Option<u64>,
+    /// When that number was read (Unix seconds). Older than now when it comes from the saved copy.
+    downloads_at: Option<u64>,
 }
 
 #[derive(Serialize, Debug)]
@@ -436,6 +440,14 @@ async fn network_status() -> Result<NetworkStatus, String> {
 }
 
 #[tauri::command]
+fn set_show_downloads(enabled: bool) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.show_downloads = enabled;
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
 fn set_show_status(enabled: bool) -> Result<SettingsView, String> {
     let mut settings = load_settings();
     settings.show_status = enabled;
@@ -446,6 +458,108 @@ fn set_show_status(enabled: bool) -> Result<SettingsView, String> {
 #[tauri::command]
 fn open_github_status_page() -> Result<(), String> {
     open_with_system(GITHUB_STATUS_PAGE)
+}
+
+// ---------- download totals ----------
+//
+// GitHub counts, publicly, how many times each file of a release was downloaded. The total for an app
+// adds up every program file (AppImage, installer, zip, APK ... on any system) of every version, so
+// all systems contribute to one number. Checksum, debug, source and packaging files are not counted:
+// the launcher fetches the checksum file on every install, which would inflate the figure.
+// Nothing is sent anywhere and nobody is identified; these are GitHub's own numbers.
+
+#[derive(Deserialize, Clone, Debug)]
+struct CountedAsset {
+    name: String,
+    #[serde(default)]
+    download_count: u64,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+struct CountedRelease {
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    assets: Vec<CountedAsset>,
+}
+
+/// Does a downloaded file count as "someone got the software"?
+fn counts_as_download(name: &str) -> bool {
+    describe_archive_file(name).map_or(false, |c| c.group == "program" && !c.debug)
+}
+
+fn sum_downloads(releases: &[CountedRelease]) -> u64 {
+    releases
+        .iter()
+        .filter(|r| !r.draft)
+        .flat_map(|r| &r.assets)
+        .filter(|a| counts_as_download(&a.name))
+        .map(|a| a.download_count)
+        .sum()
+}
+
+/// One page of a repository's releases, asking GitHub "only if changed" like the other requests.
+static PAGE_CACHE: std::sync::Mutex<Option<HashMap<String, (String, Vec<CountedRelease>)>>> = std::sync::Mutex::new(None);
+
+fn fetch_release_page(url: &str) -> Result<Vec<CountedRelease>, SourceError> {
+    let cached = PAGE_CACHE.lock().ok().and_then(|c| c.as_ref().and_then(|m| m.get(url).cloned()));
+    let mut req = http().get(url).set("User-Agent", "hopper-launcher").set("Accept", "application/vnd.github+json");
+    if let Some((etag, _)) = &cached {
+        req = req.set("If-None-Match", etag);
+    }
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(429, _)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(403, r)) => return Err(forbidden(&r)),
+        Err(ureq::Error::Status(404 | 451, _)) => return Err(SourceError::Gone),
+        Err(ureq::Error::Status(code, _)) => return Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
+        Err(other) => return Err(SourceError::Unreachable(other.to_string())),
+    };
+    if resp.status() == 304 {
+        return cached.map(|(_, r)| r).ok_or_else(|| SourceError::Other("nothing saved for an unchanged page".into()));
+    }
+    let etag = resp.header("etag").map(str::to_string);
+    let page: Vec<CountedRelease> = resp.into_json().map_err(|e| SourceError::Other(e.to_string()))?;
+    if let (Some(etag), Ok(mut cache)) = (etag, PAGE_CACHE.lock()) {
+        cache.get_or_insert_with(HashMap::new).insert(url.to_string(), (etag, page.clone()));
+    }
+    Ok(page)
+}
+
+/// The total for one repository, following GitHub's pages so that a long history is counted in full.
+fn fetch_download_total(repo: &str) -> Result<u64, SourceError> {
+    let mut total = 0;
+    for page in 1..=50 {
+        let url = format!("{}/repos/{repo}/releases?per_page=100&page={page}", api_base());
+        let releases = fetch_release_page(&url)?;
+        total += sum_downloads(&releases);
+        if releases.len() < 100 {
+            return Ok(total);
+        }
+    }
+    Ok(total)
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
+struct SavedCount {
+    downloads: u64,
+    at: u64,
+}
+
+fn counts_path() -> PathBuf {
+    data_dir().join("counts.json")
+}
+
+fn load_counts() -> HashMap<String, SavedCount> {
+    fs::read_to_string(counts_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_counts(c: &HashMap<String, SavedCount>) {
+    if fs::create_dir_all(data_dir()).is_ok() {
+        if let Ok(text) = serde_json::to_string_pretty(c) {
+            let _ = fs::write(counts_path(), text);
+        }
+    }
 }
 
 // ---------- is an app's source still there? ----------
@@ -552,12 +666,45 @@ fn check_all(apps: &[AppEntry], dev: &device::Device, now: u64) -> Vec<ReleaseIn
             let (source, new_health) = assess(&health.get(&id).cloned().unwrap_or_default(), outcome_of(&result), internet, now);
             health.insert(id.clone(), new_health);
             match result {
-                Ok(r) => ReleaseInfo { id, builds: builds_for(&r.assets, &dev.os, &dev.arch), tag: Some(r.tag_name), error: None, source },
-                Err(e) => ReleaseInfo { id, tag: None, builds: vec![], error: Some(e.message()), source },
+                Ok(r) => ReleaseInfo { id, builds: builds_for(&r.assets, &dev.os, &dev.arch), tag: Some(r.tag_name), error: None, source, downloads: None, downloads_at: None },
+                Err(e) => ReleaseInfo { id, tag: None, builds: vec![], error: Some(e.message()), source, downloads: None, downloads_at: None },
             }
         })
         .collect();
     save_health(&health);
+    attach_download_totals(apps, infos, now)
+}
+
+/// Adds each app's download total. Fresh when GitHub answers; otherwise the last saved number, so being
+/// offline never blanks it. Nothing is requested at all when the user has turned counters off.
+fn attach_download_totals(apps: &[AppEntry], mut infos: Vec<ReleaseInfo>, now: u64) -> Vec<ReleaseInfo> {
+    if !load_settings().show_downloads {
+        return infos;
+    }
+    // Only ask about repositories that answered; a repository that is down would just cost a timeout.
+    let live: Vec<(usize, &AppEntry)> = infos
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| matches!(i.source, Source::Ok | Source::NoRelease))
+        .filter_map(|(n, i)| apps.iter().find(|a| a.id == i.id).map(|a| (n, a)))
+        .collect();
+    let fresh: Vec<(usize, Result<u64, SourceError>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = live.iter().map(|&(n, app)| s.spawn(move || (n, fetch_download_total(&app.repo)))).collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let mut saved = load_counts();
+    for (n, result) in fresh {
+        if let Ok(total) = result {
+            saved.insert(infos[n].id.clone(), SavedCount { downloads: total, at: now });
+        }
+    }
+    for info in infos.iter_mut() {
+        if let Some(c) = saved.get(&info.id) {
+            info.downloads = Some(c.downloads);
+            info.downloads_at = Some(c.at);
+        }
+    }
+    save_counts(&saved);
     infos
 }
 
@@ -813,11 +960,14 @@ struct Settings {
     /// Show the internet and GitHub status in the corner (reads githubstatus.com). On unless the user turns it off.
     #[serde(default = "default_true")]
     show_status: bool,
+    /// Show each app's download total on its tile. On unless the user turns it off.
+    #[serde(default = "default_true")]
+    show_downloads: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true, show_downloads: true }
     }
 }
 
@@ -1590,6 +1740,8 @@ struct SettingsView {
     archive_enabled: bool,
     /// Whether the internet and GitHub status is shown in the corner.
     show_status: bool,
+    /// Whether each app's download total is shown on its tile.
+    show_downloads: bool,
     existing_mode: String,
     search_folders: bool,
     /// Whether the launcher will search folders at all under the current choice.
@@ -1614,6 +1766,7 @@ fn settings_view() -> SettingsView {
         custom_order: !settings.app_order.is_empty(),
         archive_enabled: settings.archive_enabled,
         show_status: settings.show_status,
+        show_downloads: settings.show_downloads,
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -1752,6 +1905,7 @@ pub fn run() {
             skip_update,
             network_status,
             set_show_status,
+            set_show_downloads,
             open_github_status_page,
             archive_list,
             archive_download,
@@ -1775,6 +1929,8 @@ mod tests {
 
     /// How many full (not "unchanged") release answers the fake server has sent.
     static FULL_RELEASE_ANSWERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    /// How many requests for a repository's list of releases (the download totals) the fake server has seen.
+    static LIST_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// Tests that set process-wide environment variables take turns.
     static ENV: Mutex<()> = Mutex::new(());
@@ -2285,6 +2441,123 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    // ---------- download totals ----------
+
+    fn counted(json: &str) -> Vec<CountedRelease> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn download_totals_add_every_system_and_version_but_never_extras() {
+        let releases = counted(
+            r#"[
+              {"draft": false, "assets": [
+                {"name": "App-1.0-x86_64.AppImage", "download_count": 100},
+                {"name": "App-windows-x64-1.0.zip", "download_count": 50},
+                {"name": "App-Setup-1.0-x64.exe", "download_count": 40},
+                {"name": "App-android-1.0.apk", "download_count": 10},
+                {"name": "SHA256SUMS", "download_count": 999},
+                {"name": "SHA256SUMS-windows", "download_count": 999},
+                {"name": "App-debug-1.0-x86_64.AppImage", "download_count": 999},
+                {"name": "app-source-1.0.tar.gz", "download_count": 999},
+                {"name": "app-bin-aur-1.0.tar.gz", "download_count": 999}]},
+              {"draft": false, "assets": [
+                {"name": "App-0.9-x86_64.AppImage", "download_count": 7},
+                {"name": "App-Setup-0.9-x64.exe", "download_count": 3}]},
+              {"draft": true, "assets": [{"name": "App-2.0-x86_64.AppImage", "download_count": 1000}]}
+            ]"#,
+        );
+        // 100 + 50 + 40 + 10 across Linux, Windows and Android, plus 7 + 3 from the older version: one total.
+        assert_eq!(sum_downloads(&releases), 210);
+        assert_eq!(sum_downloads(&[]), 0);
+        // an asset with no count counts as zero rather than breaking the sum
+        assert_eq!(sum_downloads(&counted(r#"[{"assets": [{"name": "A.AppImage"}]}]"#)), 0);
+        assert!(counts_as_download("Sudo.Make.Art.0.1.2.exe") && counts_as_download("Hop-tunes-1.4.0-x86_64.appimage"));
+        assert!(!counts_as_download("KIT-SHA256SUMS") && !counts_as_download("HopCast-debug-0.1.15.0-x86_64.appimage"));
+    }
+
+    #[test]
+    fn download_totals_follow_github_pages_so_long_histories_are_counted_in_full() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        let page = |n: usize, count: u64| {
+            let list: Vec<_> = (0..n).map(|i| serde_json::json!({"draft": false, "assets": [{"name": format!("App-{i}.AppImage"), "download_count": count}]})).collect();
+            serde_json::to_vec(&list).unwrap()
+        };
+        {
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/long/releases?per_page=100&page=1".into(), page(100, 2)); // a full page: ask for the next
+            r.insert("/repos/me/long/releases?per_page=100&page=2".into(), page(7, 1));
+            r.insert("/repos/me/short/releases?per_page=100&page=1".into(), page(3, 5)); // fewer than 100: that was all
+        }
+        assert_eq!(fetch_download_total("me/long").unwrap(), 100 * 2 + 7);
+        assert_eq!(fetch_download_total("me/short").unwrap(), 15);
+        assert_eq!(fetch_download_total("me/missing").unwrap_err(), SourceError::Gone);
+        std::env::remove_var("HOPPER_API_BASE");
+    }
+
+    #[test]
+    fn download_counts_are_kept_for_offline_and_switched_off_means_no_requests() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-counts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        std::env::set_var("HOPPER_STATUS_URL", "http://127.0.0.1:1/none");
+        std::env::set_var("HOPPER_PROBE_ADDRS", "127.0.0.1:1");
+        let list = |n: u64| serde_json::to_vec(&vec![serde_json::json!({"draft": false, "assets": [{"name": "App.AppImage", "download_count": n}, {"name": "SHA256SUMS", "download_count": 500}]})]).unwrap();
+        {
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/app/releases/latest".into(), release_json());
+            r.insert("/repos/me/app/releases?per_page=100&page=1".into(), list(41));
+        }
+        let apps = vec![AppEntry { repo: "me/app".into(), ..entry("app", "App") }];
+        let dev = device::Device { os: "linux".into(), arch: "x86_64".into(), ram_gb: None, gpus: vec![] };
+        let hits = || LIST_HITS.load(std::sync::atomic::Ordering::SeqCst);
+
+        // A fresh reading: the checksum file's 500 is not counted.
+        let first = check_all(&apps, &dev, 1_000);
+        assert_eq!((first[0].downloads, first[0].downloads_at), (Some(41), Some(1_000)));
+        // The numbers move on: the next reading shows them, stamped with the new time.
+        routes.lock().unwrap().insert("/repos/me/app/releases?per_page=100&page=1".into(), list(57));
+        let second = check_all(&apps, &dev, 2_000);
+        assert_eq!((second[0].downloads, second[0].downloads_at), (Some(57), Some(2_000)));
+
+        // The list becomes unreachable: the last number is kept, with the time it was read.
+        routes.lock().unwrap().insert("/repos/me/app/releases?per_page=100&page=1".into(), b"__STATUS__:503".to_vec());
+        let offline = check_all(&apps, &dev, 3_000);
+        assert_eq!((offline[0].downloads, offline[0].downloads_at), (Some(57), Some(2_000)), "an old number must not be shown as fresh");
+
+        // Counters switched off: nothing is requested and nothing is shown.
+        set_show_downloads(false).unwrap();
+        let before = hits();
+        let off = check_all(&apps, &dev, 4_000);
+        assert_eq!(hits(), before, "the list was requested although counters are off");
+        assert_eq!(off[0].downloads, None);
+        assert!(Settings::default().show_downloads, "counters are on by default");
+
+        for k in ["HOPPER_API_BASE", "HOPPER_STATUS_URL", "HOPPER_PROBE_ADDRS"] {
+            std::env::remove_var(k);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Needs saved GitHub data: checks the sum on real releases. HOPPER_REAL_RELEASES_JSON is a file from
+    /// `gh api "repos/OWNER/REPO/releases?per_page=100"`; HOPPER_EXPECTED_TOTAL is an independent sum.
+    #[test]
+    #[ignore]
+    fn real_github_numbers_add_up_to_the_independent_total() {
+        let path = std::env::var("HOPPER_REAL_RELEASES_JSON").expect("set HOPPER_REAL_RELEASES_JSON");
+        let releases: Vec<CountedRelease> = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let total = sum_downloads(&releases);
+        println!("releases: {}, counted total: {total}", releases.len());
+        if let Ok(expected) = std::env::var("HOPPER_EXPECTED_TOTAL") {
+            assert_eq!(total.to_string(), expected);
+        }
+    }
+
     #[test]
     fn reads_versions_from_file_names() {
         assert_eq!(version_from_name("HopCast-release-0.1.14-x86_64.AppImage"), Some("0.1.14".into()));
@@ -2458,6 +2731,9 @@ mod tests {
                         }
                     }
                     let mut s = stream;
+                    if path.contains("/releases?") {
+                        LIST_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
                     match routes.lock().unwrap().get(&path) {
                         Some(body) if body.starts_with(b"__STATUS__:") => {
                             let code = String::from_utf8_lossy(&body[11..]).trim().to_string();

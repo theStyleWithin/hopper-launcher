@@ -154,6 +154,15 @@ function tile(app) {
   }
 
   t.append(top, el("div", { className: "row" }, sel, btns));
+  const c = counts[app.id];
+  if (settings?.show_downloads && c) {
+    // One exact total per app: every version and every system (Linux, Windows, Android ...) added together.
+    const n = c.downloads.toLocaleString();
+    const chip = el("span", { className: "dl", textContent: "▼ " + n });
+    chip.title = `Downloaded ${n} times in total, across every version and system, according to GitHub.` + (c.at ? ` Read ${new Date(c.at * 1000).toLocaleString()}.` : "");
+    chip.setAttribute("aria-label", `${n} downloads in total`);
+    t.append(chip);
+  }
   return t;
 }
 
@@ -220,6 +229,11 @@ async function uninstall(app) {
 }
 
 let lastNetwork = null; // what the corner indicator last learned: { internet, github }
+const counts = {};       // app id -> { downloads, at }: the last download total GitHub (or the saved copy) gave
+
+function rememberCounts(list) {
+  list.forEach((r) => { if (r.downloads != null) counts[r.id] = { downloads: r.downloads, at: r.downloads_at }; });
+}
 
 const GH_LABEL = { none: ["ok", "operational"], minor: ["warn", "minor issues"], major: ["bad", "outage"], critical: ["bad", "outage"], maintenance: ["warn", "maintenance"], unknown: ["off", "unknown"] };
 
@@ -264,7 +278,9 @@ async function refresh() {
   say("Checking GitHub…");
   updateStatus(); // runs alongside; the tiles do not wait for it
   try {
-    (await invoke("check_releases")).forEach((r) => (releases[r.id] = r));
+    const found = await invoke("check_releases");
+    rememberCounts(found);
+    found.forEach((r) => (releases[r.id] = r));
     const updates = apps.filter(updatePrompt).length;
     const failed = Object.values(releases).filter((r) => r.error && r.error !== "No release published yet").length;
     const offline = lastNetwork?.internet === "offline";
@@ -351,7 +367,9 @@ async function quietCheck() {
   updateStatus();
   const before = Object.fromEntries(Object.entries(releases).map(([id, r]) => [id, r.tag]));
   try {
-    (await invoke("check_releases")).forEach((r) => {
+    const found = await invoke("check_releases");
+    rememberCounts(found);
+    found.forEach((r) => {
       if (!r.error || !releases[r.id]?.tag) releases[r.id] = r; // a failed check keeps the last good answer
     });
     const fresh = apps.filter((a) => before[a.id] && releases[a.id]?.tag !== before[a.id] && updatePrompt(a));
@@ -644,6 +662,16 @@ function renderSettings() {
       }))));
     sheet.append(fr);
   }
+
+  sheet.append(el("h3", { textContent: "Download counts" }));
+  const countBox = el("input", { type: "checkbox", checked: settings.show_downloads });
+  countBox.onchange = async () => {
+    try { settings = await invoke("set_show_downloads", { enabled: countBox.checked }); } catch (e) { say(String(e), true); }
+    if (settings.show_downloads) refresh(); else render();
+    renderSettings();
+  };
+  sheet.append(el("label", { className: "choice" }, countBox, el("b", { textContent: "Show how many times each app has been downloaded" }),
+    el("span", { textContent: "On by default. A small green number on each app's tile: the total for that app across every version and system, from GitHub's own public numbers. Nothing is sent and nobody is identified." })));
 
   sheet.append(el("h3", { textContent: "Status in the corner" }));
   const statusBox = el("input", { type: "checkbox", checked: settings.show_status });
