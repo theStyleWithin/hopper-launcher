@@ -83,7 +83,7 @@ function tile(app) {
 
   const grip = el("button", { className: "grip", type: "button", title: "Drag to move, or use the arrow keys" });
   grip.setAttribute("aria-label", `Move ${app.name}. Drag it, or press the arrow keys.`);
-  const top = el("div", { className: "top" }, grip, el("div", { className: "titles" }, el("h2", { textContent: app.name }), el("div", { className: "tag", textContent: app.tagline, title: app.tagline })));
+  const top = el("div", { className: "top" }, grip, el("div", { className: "titles" }, el("h2", { textContent: app.name, title: app.name }), el("div", { className: "tag", textContent: app.tagline, title: app.tagline })));
   if (app.installed) top.append(button(app.adopted ? "Forget" : "Uninstall", "x", () => uninstall(app), working));
 
   const sel = el("select");

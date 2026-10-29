@@ -147,3 +147,10 @@ label.sub { font-size: 14px; color: var(--dim); }
 .grip:active { cursor: grabbing; }
 .tile.dragging { border-color: var(--accent); outline: 1px solid var(--accent); }
 .sheet > button.ghost { margin-bottom: 16px; }
+
+/* A long app name is cut off with "..." instead of wrapping, so every tile stays the same shape. */
+.tile h2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Make room: a slightly smaller corner button and app name, the same on every tile, so even the longest name fits. */
+.tile h2 { font-size: 18px; line-height: 24px; }
+.x { padding: 0 6px; font-size: 11px; }

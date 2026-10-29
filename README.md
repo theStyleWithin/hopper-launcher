@@ -29,7 +29,7 @@ update is available.
 
 ![The Before you install panel with four short notes.](docs/images/before-you-install.png)
 
-*Below the tiles, a short "Before you install" panel. The wording in this picture is from version 0.1.2 and still says "Linux and Android"; the warning at the top of this page is the current guidance (tested on Linux only).*
+*Below the tiles, a short "Before you install" panel.*
 
 ![The launcher in the Midnight and Paper (light) themes.](docs/images/themes.png)
 
