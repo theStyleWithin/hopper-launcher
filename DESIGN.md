@@ -61,6 +61,13 @@ The recommendation is advice only. The user can pick any listed build.
 Releases that include `SHA256SUMS` files (HopCast does) let the launcher verify
 every download before installing it. Planned.
 
+## Android
+On Android the launcher shows only `.apk` builds (nothing else), with the
+recommended one first. Tapping Install downloads the APK and hands it to
+Android's own installer, which asks the user to confirm. Android will also ask,
+once, to allow installs from the launcher, so the app explains that first.
+Apps with no APK stay in the lineup but are not clickable, as on every platform.
+
 ## Look and feel (built for people who like order)
 - One 8px spacing grid. Every tile is the same size.
 - Apps are always in alphabetical order. The layout never shifts or reorders
@@ -78,12 +85,10 @@ theme file with the same tokens.
 
 ## Platform notes
 - **Windows:** unsigned installers trigger a SmartScreen warning; explain it in the UI.
-- **Android:** APKs are installed outside the Play Store, so Android will ask
-  the user to allow installs from this app. Needs a clear one-time explanation.
+- **Android:** see the Android section above.
 - **Linux:** AppImages are downloaded and made executable, as in the scaffold.
 
 ## Open questions for the owner
-1. On Android, should the launcher hand APKs to the system installer, or just open the download?
-2. Is the built-in theme list enough, or should users also get an accent-colour picker?
-3. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
+1. Is the built-in theme list enough, or should users also get an accent-colour picker?
+2. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
    consider rewording it, like the media player description.
