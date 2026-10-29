@@ -1,7 +1,10 @@
 # Hopper Launcher: project notes and roadmap
 
 ## Status
-Design phase started (see `DESIGN.md` and `design/mockup.html`). Previously on hold. The owner is finishing HopCast, Alias Maker and HopTunes first.
+Desktop (Linux) launcher built on branch `design-clean`: release-driven installs, checksum
+verification, existing-install handling and Settings. 16 Rust tests pass and the real app was run on a
+virtual display. Not yet tested: the native file/folder pickers, a real GitHub release, Windows and
+Android builds. See `DESIGN.md` and `design/mockup.html`. The owner is finishing HopCast, Alias Maker and HopTunes first.
 The Tauri scaffold on this branch has never been compiled; start with a build check.
 
 ## Context

@@ -44,9 +44,9 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 .device strong { display: block; }
 .device span { color: var(--dim); font-size: 14px; }
 
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-@media (max-width: 880px) { .grid { grid-template-columns: repeat(2, 1fr); } }
-@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } body { padding: 16px; } }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 880px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .grid { grid-template-columns: minmax(0, 1fr); } body { padding: 16px; } }
 
 .tile {
   height: 208px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
@@ -76,3 +76,45 @@ footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px
 /* Cyberpunk flavour without noise: a single thin accent line, no glow or flicker. */
 [data-theme="cyberpunk"] header { border-bottom: 1px solid var(--accent); }
 @media (prefers-reduced-motion: no-preference) { .tile, .go { transition: background .15s; } }
+
+/* Dropdowns: draw them ourselves so every theme's colours apply on every platform. */
+:root, [data-theme="cyberpunk"], [data-theme="midnight"] { color-scheme: dark; }
+[data-theme="paper"] { color-scheme: light; }
+select {
+  -webkit-appearance: none; appearance: none; min-width: 0;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%239aa2c8' stroke-width='2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 16px center;
+}
+select option { background: var(--panel); color: var(--text); }
+select:disabled { opacity: 1; }
+
+/* Settings */
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: 4px; width: min(760px, 94vw); max-height: 90vh; padding: 0; }
+dialog::backdrop { background: rgba(0, 0, 0, .65); }
+.sheet { padding: 24px 32px 32px; overflow: auto; max-height: 90vh; }
+.sheet h2 { font-size: 24px; line-height: 32px; font-weight: 300; }
+.sheet h3 { font-size: 12px; line-height: 16px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin: 32px 0 16px; }
+.sheet p, .note { color: var(--dim); font-size: 14px; line-height: 24px; }
+.choice { display: grid; grid-template-columns: 24px 1fr; gap: 0 16px; padding: 16px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--panel-hi); }
+.choice input { margin: 4px 0 0; accent-color: var(--accent); }
+.choice b { font-weight: 600; } .choice span { grid-column: 2; color: var(--dim); font-size: 14px; line-height: 24px; }
+.sub { margin: 8px 0 0 40px; font-size: 14px; display: flex; gap: 8px; align-items: center; color: var(--dim); }
+.rows { border: 1px solid var(--line); border-radius: 4px; }
+.rows > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; min-height: 56px; padding: 8px 16px; }
+.rows > div + div { border-top: 1px solid var(--line); }
+.rows .main { min-width: 0; } .rows .main b { display: block; font-weight: 600; }
+.rows .main small { display: block; color: var(--dim); font-size: 12px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows .acts { display: flex; gap: 8px; }
+.rows button { height: 32px; font-size: 13px; }
+.rows .empty { color: var(--dim); font-size: 14px; }
+.sheet .foot { margin-top: 32px; display: flex; justify-content: flex-end; }
+.sheet .foot .go { width: auto; min-width: 128px; }
+
+/* Fixes: long taglines must not push the corner button out; dialog centred; option text normal case. */
+.top > div:first-child { min-width: 0; flex: 1; }
+.x { flex: none; }
+dialog { margin: auto; }
+label.choice, label.sub { text-transform: none; letter-spacing: 0; font-size: 16px; line-height: 24px; color: var(--text); }
+label.sub { font-size: 14px; color: var(--dim); }

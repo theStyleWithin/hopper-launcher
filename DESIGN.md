@@ -70,6 +70,25 @@ away. (An optional "close the launcher after launching" setting is a possible
 later addition.) Updates appear on the tile when a newer release exists, and
 install files live in the launcher's own folder (see the install notes in `ROADMAP.md`).
 
+## Apps you already have
+For people who installed an app before the launcher, Settings has one exclusive
+choice, **Apps you already have**:
+- **Auto-detect** (default): looks one level deep in the usual folders
+  (`~/Applications`, `~/AppImages`, `~/bin`, `~/.local/bin`, `~/Downloads`,
+  `~/Desktop`, plus any folder the user adds) for files named after the apps,
+  and asks before using each one. Debug builds and the launcher's own copies are ignored.
+- **Choose myself**: never searches. Each app has a "Use an existing install…" button in Settings.
+- **Keep in place**: existing apps are used where they are and the launcher never
+  downloads its own copy of them. An available update shows as a notice with a
+  link to the releases page. A switch decides whether the usual folders are searched.
+
+Rules that always apply: a copy the user points the launcher at is never moved,
+changed or deleted. "Forget" only makes the launcher stop tracking it. In the
+other two modes, updating an adopted app asks first, then downloads the new
+version into the launcher's folder and leaves the old file alone. A copy
+installed by the launcher itself must be uninstalled before adopting another.
+On first run a short welcome screen asks this question.
+
 ## Android
 On Android the launcher shows only `.apk` builds (nothing else), with the
 recommended one first. Tapping Install downloads the APK and hands it to

@@ -7,12 +7,24 @@ const $ = (id) => document.getElementById(id);
 const root = document.documentElement;
 let device = null;
 let apps = [];
+let settings = null;
 let releases = {}; // app id -> { tag, builds, error }
 const busy = new Set();
+const norm = (v) => (v || "").replace(/^v/i, "");
 
 function say(text, isErr = false) {
   $("msg").textContent = text || "";
   $("msg").className = isErr ? "err" : "";
+}
+
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  kids.forEach((k) => e.append(k));
+  return e;
+}
+
+function button(label, cls, onclick, disabled = false) {
+  return el("button", { className: cls, textContent: label, onclick, disabled, type: "button" });
 }
 
 // ---------- device bar ----------
@@ -37,13 +49,9 @@ function renderSummary() {
 
 // ---------- tiles ----------
 
-function button(label, cls, onclick, disabled = false) {
-  const b = document.createElement("button");
-  b.className = cls;
-  b.textContent = label;
-  b.disabled = disabled;
-  if (onclick) b.onclick = onclick;
-  return b;
+function updateAvailable(app) {
+  const latest = releases[app.id]?.tag;
+  return !!(app.installed && latest && app.version && norm(latest) !== norm(app.version));
 }
 
 function tile(app) {
@@ -52,55 +60,43 @@ function tile(app) {
   const os = OS_NAME[device.os] || device.os;
   const builds = rel?.builds || [];
   const latest = rel?.tag;
-  const hasUpdate = app.installed && latest && app.version && latest !== app.version;
+  const hasUpdate = updateAvailable(app);
+  const inPlace = settings?.existing_mode === "in_place";
   const untested = (app.untested_on || []).includes(device.os) ? " · untested" : "";
 
-  const el = document.createElement("section");
-  el.className = "tile";
-  if (app.accent) el.style.setProperty("--a", app.accent);
+  const t = el("section", { className: "tile" });
+  if (app.accent) t.style.setProperty("--a", app.accent);
 
-  const top = document.createElement("div");
-  top.className = "top";
-  const titles = document.createElement("div");
-  const h = document.createElement("h2");
-  h.textContent = app.name;
-  const tag = document.createElement("div");
-  tag.className = "tag";
-  tag.textContent = app.tagline;
-  titles.append(h, tag);
-  top.append(titles);
-  if (app.installed) top.append(button("Uninstall", "x", () => uninstall(app), working));
+  const top = el("div", { className: "top" }, el("div", {}, el("h2", { textContent: app.name }), el("div", { className: "tag", textContent: app.tagline })));
+  if (app.installed) top.append(button(app.adopted ? "Forget" : "Uninstall", "x", () => uninstall(app), working));
 
-  const row = document.createElement("div");
-  row.className = "row";
-  const sel = document.createElement("select");
+  const sel = el("select");
   sel.setAttribute("aria-label", "Version");
-  const btns = document.createElement("div");
-  btns.className = "btns";
-
-  const offline = !rel ? "Checking GitHub…" : rel.error;
+  const btns = el("div", { className: "btns" });
 
   if (app.installed) {
-    sel.add(new Option(hasUpdate ? `Update available · ${latest}` : `Installed · ${app.version || ""}`.trim()));
+    const mine = app.adopted ? "Your copy" : "Installed";
+    const ver = app.version ? ` · ${app.version}` : "";
+    sel.add(new Option(hasUpdate ? `Update available · ${latest}` : mine + ver));
     sel.disabled = true;
     btns.append(button("Launch", "go", () => launch(app), working));
-    if (hasUpdate && builds.length) {
-      btns.append(button(working ? "Updating…" : "Update", "go alt", () => install(app, builds[0].file), working));
+    if (hasUpdate) {
+      if (app.adopted && inPlace) btns.append(button("Releases", "go alt", () => invoke("open_repo", { id: app.id }).catch((e) => say(String(e), true))));
+      else if (builds.length) btns.append(button(working ? "Updating…" : "Update", "go alt", () => update(app, builds[0].file), working));
     }
   } else if (builds.length) {
     builds.forEach((b, i) => sel.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind] + untested, b.file)));
-    btns.append(button(working ? "Installing…" : "Install", "go", () => install(app, sel.value), working));
     sel.disabled = working;
+    btns.append(button(working ? "Installing…" : "Install", "go", () => install(app, sel.value), working));
   } else {
-    el.classList.add("off");
-    sel.add(new Option(rel?.error ? offline : `No ${os} build yet`));
+    t.classList.add("off");
+    sel.add(new Option(rel?.error ? rel.error : rel ? `No ${os} build yet` : "Checking GitHub…"));
     sel.disabled = true;
     btns.append(button(rel ? "Unavailable" : "Please wait", "go", null, true));
   }
 
-  row.append(sel, btns);
-  el.append(top, row);
-  return el;
+  t.append(top, el("div", { className: "row" }, sel, btns));
+  return t;
 }
 
 function render() {
@@ -131,6 +127,11 @@ async function install(app, file) {
   }
 }
 
+async function update(app, file) {
+  if (app.adopted && !confirm(`You are using your own copy of ${app.name}:\n${app.path}\n\nDownload the new version into the launcher's folder and switch to it? Your file stays where it is.`)) return;
+  await install(app, file);
+}
+
 async function launch(app) {
   try {
     await invoke("launch_app", { id: app.id });
@@ -141,17 +142,20 @@ async function launch(app) {
 }
 
 async function uninstall(app) {
-  const warn = app.folder
-    ? `Uninstall ${app.name}? This deletes its program folder, including any settings stored inside it.`
-    : `Uninstall ${app.name}? Your settings and data are kept.`;
+  const warn = app.adopted
+    ? `Stop using your copy of ${app.name} in the launcher? Your file is not deleted.`
+    : app.folder
+      ? `Uninstall ${app.name}? This deletes its program folder, including any settings stored inside it.`
+      : `Uninstall ${app.name}? Your settings and data are kept.`;
   if (!confirm(warn)) return;
   try {
     await invoke("uninstall_app", { id: app.id });
-    say(`${app.name} uninstalled`);
+    say(app.adopted ? `${app.name} forgotten. Your file was left alone.` : `${app.name} uninstalled`);
   } catch (e) {
     say(String(e), true);
   }
   await loadApps();
+  renderSettings();
 }
 
 async function refresh() {
@@ -161,7 +165,7 @@ async function refresh() {
   say("Checking GitHub…");
   try {
     (await invoke("check_releases")).forEach((r) => (releases[r.id] = r));
-    const updates = apps.filter((a) => a.installed && releases[a.id]?.tag && a.version && releases[a.id].tag !== a.version).length;
+    const updates = apps.filter(updateAvailable).length;
     const failed = Object.values(releases).filter((r) => r.error && r.error !== "No release published yet").length;
     say(failed ? "Some apps could not be checked. Are you online?" : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date", !!failed);
   } catch (e) {
@@ -171,6 +175,135 @@ async function refresh() {
     render();
   }
 }
+
+// ---------- settings ----------
+
+const MODES = [
+  ["auto", "Auto-detect", "Look in the usual folders for apps you already have, and ask before using each one."],
+  ["manual", "Choose myself", "Never search. Point the launcher at each app you already have, one by one."],
+  ["in_place", "Keep in place", "Use apps you already have right where they are. The launcher never downloads its own copy of them, so you update those yourself."],
+];
+let found = null; // null = not scanned yet
+let welcome = false;
+
+const dialog = $("settings");
+const pickFile = (title) => window.__TAURI__.dialog.open({ multiple: false, directory: false, title });
+const pickFolder = (title) => window.__TAURI__.dialog.open({ multiple: false, directory: true, title });
+
+function openSettings(isWelcome = false) {
+  welcome = isWelcome;
+  found = null;
+  renderSettings();
+  if (!dialog.open) dialog.showModal();
+  if (settings.scanning) scan();
+}
+
+async function closeSettings() {
+  dialog.close();
+  if (welcome) {
+    welcome = false;
+    await invoke("finish_first_run");
+  }
+}
+
+async function scan() {
+  found = null;
+  renderSettings();
+  try {
+    found = await invoke("scan_existing");
+  } catch (e) {
+    say(String(e), true);
+    found = [];
+  }
+  renderSettings();
+}
+
+async function adopt(id, path) {
+  try {
+    await invoke("adopt_app", { id, path });
+    say("Using your copy. It stays where it is.");
+  } catch (e) {
+    say(String(e), true);
+  }
+  await loadApps();
+  if (found) found = found.filter((c) => c.app_id !== id);
+  renderSettings();
+}
+
+async function choose(app) {
+  const path = await pickFile(`Choose your existing copy of ${app.name}`);
+  if (path) await adopt(app.id, path);
+}
+
+async function setMode(mode, searchFolders) {
+  settings = await invoke("set_existing_mode", { mode, searchFolders });
+  found = null;
+  render();
+  renderSettings();
+  if (settings.scanning) scan();
+}
+
+function renderSettings() {
+  if (!settings) return;
+  const sheet = el("div", { className: "sheet" });
+  sheet.append(el("h2", { id: "settings-title", textContent: welcome ? "Do you already have some of these apps?" : "Settings" }));
+  sheet.append(el("p", { textContent: "If you installed any of these apps before using the launcher, choose how it should treat them. Your files are never moved or deleted." }));
+
+  sheet.append(el("h3", { textContent: "Apps you already have" }));
+  MODES.forEach(([value, title, desc]) => {
+    const radio = el("input", { type: "radio", name: "mode", value, checked: settings.existing_mode === value });
+    radio.onchange = () => setMode(value, settings.search_folders);
+    sheet.append(el("label", { className: "choice" }, radio, el("b", { textContent: title }), el("span", { textContent: desc })));
+  });
+  if (settings.existing_mode === "in_place") {
+    const box = el("input", { type: "checkbox", checked: settings.search_folders });
+    box.onchange = () => setMode("in_place", box.checked);
+    sheet.append(el("label", { className: "sub" }, box, document.createTextNode("Also search the usual folders for them")));
+  }
+
+  if (settings.scanning) {
+    sheet.append(el("h3", { textContent: "Found on this computer" }));
+    const rows = el("div", { className: "rows" });
+    if (found === null) rows.append(el("div", {}, el("span", { className: "empty", textContent: "Searching…" })));
+    else if (!found.length) rows.append(el("div", {}, el("span", { className: "empty", textContent: "Nothing new found. Apps you have elsewhere can be added below." })));
+    else found.forEach((c) => rows.append(el("div", {},
+      el("div", { className: "main" }, el("b", { textContent: c.app_name + (c.version ? " " + c.version : "") }), el("small", { textContent: c.path })),
+      el("div", { className: "acts" }, button("Use this", "go", () => adopt(c.app_id, c.path))))));
+    sheet.append(rows);
+
+    sheet.append(el("h3", { textContent: "Folders searched" }));
+    const fr = el("div", { className: "rows" });
+    settings.folders.forEach((f) => fr.append(el("div", {},
+      el("div", { className: "main" }, el("small", { textContent: f.path + (f.exists ? "" : "  (not found)") })),
+      el("div", { className: "acts" }, f.custom ? button("Remove", "ghost", async () => { settings = await invoke("remove_scan_folder", { path: f.path }); scan(); }) : el("span")))));
+    fr.append(el("div", {}, el("span", { className: "empty", textContent: "Keep your apps somewhere else?" }),
+      el("div", { className: "acts" }, button("Add folder…", "ghost", async () => {
+        const dir = await pickFolder("Add a folder to search");
+        if (dir) { settings = await invoke("add_scan_folder", { path: dir }); scan(); }
+      }))));
+    sheet.append(fr);
+  }
+
+  sheet.append(el("h3", { textContent: "Your apps" }));
+  const list = el("div", { className: "rows" });
+  apps.forEach((a) => {
+    const state = !a.installed ? "Not set up" : a.adopted ? "Your copy" : "Installed by the launcher";
+    const acts = el("div", { className: "acts" });
+    if (a.adopted) acts.append(button("Forget", "ghost", () => uninstall(a)));
+    const own = a.installed && !a.adopted;
+    const use = button(a.adopted ? "Change…" : "Use an existing install…", "ghost", () => choose(a), own);
+    if (own) use.title = "Uninstall the launcher's copy first";
+    acts.append(use);
+    list.append(el("div", {}, el("div", { className: "main" }, el("b", { textContent: a.name }), el("small", { textContent: a.adopted ? a.path : state })), acts));
+  });
+  sheet.append(list);
+
+  sheet.append(el("div", { className: "foot" }, button(welcome ? "Continue" : "Done", "go", closeSettings)));
+  dialog.replaceChildren(sheet);
+}
+
+dialog.addEventListener("cancel", (e) => { e.preventDefault(); closeSettings(); });
+$("open-settings").onclick = () => openSettings(false);
 
 // ---------- theme and accent ----------
 
@@ -237,7 +370,9 @@ checkContrast();
   try {
     device = await invoke("get_device");
     renderDevice();
+    settings = await invoke("get_settings");
     await loadApps();
+    if (settings.first_run) openSettings(true);
     await refresh();
   } catch (e) {
     say(String(e), true);

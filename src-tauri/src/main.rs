@@ -445,13 +445,17 @@ fn save_settings(settings: &Settings) -> Result<(), String> {
 fn default_scan_folders() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        for sub in ["Applications", "AppImages", "bin", ".local/bin"] {
+        // Downloads and Desktop are listed explicitly because the system's own lookup
+        // returns nothing on setups without an XDG user-dirs file.
+        for sub in ["Applications", "AppImages", "bin", ".local/bin", "Downloads", "Desktop"] {
             v.push(home.join(sub));
         }
     }
+    // The system's own locations too, for translated or moved folders.
     v.extend(dirs::download_dir());
     v.extend(dirs::desktop_dir());
-    v.dedup();
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|p| seen.insert(p.clone()));
     v
 }
 
