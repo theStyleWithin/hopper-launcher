@@ -8,7 +8,7 @@ update is available.
 > [!WARNING]
 > **Tested on Linux only, for now.** The developer has tested these apps on Linux only. On Linux,
 > every app launches as it should (earlier launch problems are fixed in version 0.1.2 and later, so use
-> the latest release). The Windows and Android versions exist but have **not** been tested by the
+> the [latest release](../../releases/latest)). The Windows and Android versions exist but have **not** been tested by the
 > developer and may have bugs.
 >
 > **Download at your own risk.** If you are unsure, run it in a virtual machine first.
@@ -39,7 +39,11 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ## Download
 
-Get the launcher from the [Releases page](../../releases). Pick the file for your system:
+### [**Download the latest release**](../../releases/latest)
+
+That link always opens the newest release, so it stays current when new versions come out. Older
+versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
+the file for your system:
 
 | System | File | Notes |
 |---|---|---|
