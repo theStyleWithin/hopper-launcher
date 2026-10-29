@@ -860,6 +860,7 @@ fn main() {
 }
 
 #[cfg(test)]
+#[allow(dead_code, unused_imports)]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
@@ -895,6 +896,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn scan_finds_only_your_apps_and_skips_the_rest() {
         let d = std::env::temp_dir().join(format!("hopper-scan-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
@@ -915,6 +917,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn existing_installs_stay_in_place_and_settings_are_respected() {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let d = std::env::temp_dir().join(format!("hopper-adopt-{}", std::process::id()));
@@ -1090,6 +1093,7 @@ mod tests {
 
     /// One test drives the whole flow because it sets process-wide environment variables.
     #[test]
+    #[cfg(target_os = "linux")]
     fn install_launch_update_uninstall_against_fake_github() {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let data = std::env::temp_dir().join(format!("hopper-data-{}", std::process::id()));

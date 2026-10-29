@@ -58,3 +58,45 @@ jobs:
           files: |
             out/*.AppImage
             out/SHA256SUMS
+
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install the Tauri packager
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build the installer
+        working-directory: src-tauri
+        run: cargo tauri build --bundles nsis
+
+      - name: Name the files and write checksums
+        run: |
+          VER="${TAG#v}"
+          mkdir out
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe "out/Hopper-Launcher-Setup-${VER}-x64.exe"
+          (cd src-tauri/target/release && 7z a -tzip "$GITHUB_WORKSPACE/out/Hopper-Launcher-${VER}-windows-x64.zip" hopper-launcher.exe)
+          cd out && sha256sum *.exe *.zip > SHA256SUMS-windows
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          prerelease: true
+          files: |
+            out/*.exe
+            out/*.zip
+            out/SHA256SUMS-windows
