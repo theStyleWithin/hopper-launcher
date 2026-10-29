@@ -25,6 +25,9 @@ struct AppEntry {
     /// Operating systems this app's builds are not yet tested on.
     #[serde(default)]
     untested_on: Vec<String>,
+    /// The Internet Archive item that holds this app's files, kept as a backup.
+    #[serde(default)]
+    archive: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -249,7 +252,7 @@ fn expected_hash(sums: &str, file: &str) -> Option<String> {
         let hash = parts.next()?;
         let name = parts.next()?.trim_start_matches('*');
         let name = name.rsplit('/').next().unwrap_or(name);
-        (name == file && hash.len() == 64).then(|| hash.to_lowercase())
+        (name.eq_ignore_ascii_case(file) && hash.len() == 64).then(|| hash.to_lowercase())
     })
 }
 
@@ -514,11 +517,14 @@ struct Settings {
     /// The order the user dragged the apps into. Empty means alphabetical.
     #[serde(default)]
     app_order: Vec<String>,
+    /// Show the Internet Archive backup. Off until the user turns it on.
+    #[serde(default)]
+    archive_enabled: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![] }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false }
     }
 }
 
@@ -575,6 +581,360 @@ fn default_scan_folders() -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::new();
     v.retain(|p| seen.insert(p.clone()));
     v
+}
+
+// ---------- Internet Archive backup ----------
+//
+// A safety net, not a second store: when it is switched on the user can browse what has been
+// preserved on the Internet Archive and download a file by hand. Nothing here runs unless the
+// user turned it on, and nothing is ever chosen or replaced automatically.
+
+fn archive_base() -> String {
+    std::env::var("HOPPER_ARCHIVE_BASE").unwrap_or_else(|_| "https://archive.org".into())
+}
+
+/// Item names come from apps.json; refuse anything that could change the address.
+fn valid_item(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 100 && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~' | b'/') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+struct ArchiveFile {
+    name: String,
+    size: u64,
+    /// When the file was last changed, as Unix seconds.
+    mtime: Option<i64>,
+    version: Option<String>,
+    /// "linux", "windows", "android", "console" or "any".
+    os: String,
+    arch: String,
+    /// What it is, for showing: "AppImage", "Installer", "Source code" ...
+    kind: String,
+    /// "program", "source", "packaging" or "other".
+    group: String,
+    debug: bool,
+}
+
+#[derive(Serialize, Debug)]
+struct ArchiveItem {
+    app_id: String,
+    app_name: String,
+    item: Option<String>,
+    files: Vec<ArchiveFile>,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct ArchiveDownload {
+    path: String,
+    size: u64,
+    /// Which checks passed, for example "Internet Archive checksum".
+    verified: Vec<String>,
+    /// True when the file was handed to the system's installer (Android APKs).
+    handed_off: bool,
+}
+
+struct ArchiveClass {
+    os: &'static str,
+    arch: &'static str,
+    kind: String,
+    group: &'static str,
+    debug: bool,
+}
+
+/// Says what a file in an archive item is. None means "not something to list": the archive's own
+/// housekeeping files, checksum files and update helpers.
+fn describe_archive_file(name: &str) -> Option<ArchiveClass> {
+    let f = name.to_lowercase();
+    let housekeeping = ["_files.xml", "_meta.xml", "_meta.sqlite", "__ia_thumb.jpg", ".torrent"];
+    if housekeeping.iter().any(|h| f.ends_with(h)) || f.contains("sha256") || [".sig", ".asc", ".zsync"].iter().any(|e| f.ends_with(e)) {
+        return None;
+    }
+    let debug = f.contains("debug");
+    let arch = if f.contains("aarch64") || f.contains("arm64") {
+        "aarch64"
+    } else if ["x86_64", "x64", "amd64", "win64"].iter().any(|t| f.contains(t)) {
+        "x86_64"
+    } else {
+        "any"
+    };
+    let program = |os: &'static str, kind: &str| ArchiveClass { os, arch, kind: kind.into(), group: "program", debug };
+    let other = |group: &'static str, kind: &str| ArchiveClass { os: "any", arch: "any", kind: kind.into(), group, debug };
+    Some(if f.ends_with(".appimage") {
+        program("linux", "AppImage")
+    } else if f.ends_with(".deb") {
+        program("linux", ".deb")
+    } else if f.ends_with(".rpm") {
+        program("linux", ".rpm")
+    } else if f.ends_with(".flatpak") {
+        program("linux", "Flatpak")
+    } else if f.ends_with(".pkg.tar.zst") {
+        program("linux", "Arch package")
+    } else if f.ends_with(".run") {
+        program("linux", "Installer (.run)")
+    } else if f.ends_with(".apk") {
+        program("android", "APK")
+    } else if f.ends_with(".msi") {
+        program("windows", "MSI")
+    } else if f.ends_with(".exe") {
+        if f.contains("setup") || f.contains("install") {
+            program("windows", "Installer")
+        } else if f.contains("portable") {
+            program("windows", "Portable")
+        } else {
+            program("windows", "Program (.exe)")
+        }
+    } else if f.ends_with(".zip") && f.contains("win") {
+        program("windows", "Zip")
+    } else if f.ends_with(".3dsx") || f.ends_with(".cia") {
+        program("console", "3DS")
+    } else if f.ends_with(".nro") {
+        program("console", "Switch")
+    } else if f.ends_with(".rpx") || f.ends_with(".wuhb") {
+        program("console", "Wii U")
+    } else if [".tar.gz", ".tar.xz", ".tar.zst", ".zip"].iter().any(|e| f.ends_with(e)) {
+        if ["aur", "flathub", "fdroid", "flatpak", "kit", "handoff"].iter().any(|t| f.contains(t)) {
+            other("packaging", "Packaging files")
+        } else {
+            other("source", "Source code")
+        }
+    } else {
+        other("other", "Other file")
+    })
+}
+
+/// Sort key for versions like "0.1.15.0": compared number by number, newest first once reversed.
+fn version_key(v: &Option<String>) -> Vec<u64> {
+    v.as_deref().map(|s| s.split('.').filter_map(|p| p.parse().ok()).collect()).unwrap_or_default()
+}
+
+fn json_number(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+fn archive_files_from(meta: &serde_json::Value) -> Vec<ArchiveFile> {
+    let Some(files) = meta.get("files").and_then(|f| f.as_array()) else { return vec![] };
+    let mut out: Vec<ArchiveFile> = files
+        .iter()
+        .filter_map(|f| {
+            let name = f.get("name")?.as_str()?;
+            let base = name.rsplit('/').next().unwrap_or(name);
+            let class = describe_archive_file(base)?;
+            Some(ArchiveFile {
+                name: name.to_string(),
+                size: f.get("size").and_then(json_number).unwrap_or(0).max(0) as u64,
+                mtime: f.get("mtime").and_then(json_number),
+                version: version_from_name(name),
+                os: class.os.into(),
+                arch: class.arch.into(),
+                kind: class.kind,
+                group: class.group.into(),
+                debug: class.debug,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        version_key(&b.version).cmp(&version_key(&a.version)).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out
+}
+
+fn fetch_archive_metadata(item: &str) -> Result<serde_json::Value, String> {
+    if !valid_item(item) {
+        return Err("That item name is not valid".into());
+    }
+    let url = format!("{}/metadata/{item}", archive_base());
+    let resp = ureq::get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| match e {
+        ureq::Error::Status(404, _) => "Not found on the Internet Archive".to_string(),
+        ureq::Error::Status(403 | 429, _) => "The Internet Archive asked us to slow down. Try again later.".to_string(),
+        other => format!("Could not reach the Internet Archive: {other}"),
+    })?;
+    let meta: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    if meta.get("files").is_none() {
+        return Err("This item does not exist yet, or is empty".into()); // a missing item answers with {}
+    }
+    Ok(meta)
+}
+
+/// Every app's archived files. Only runs when the backup is switched on.
+fn archive_overview() -> Result<Vec<ArchiveItem>, String> {
+    if !load_settings().archive_enabled {
+        return Err("The Internet Archive backup is switched off.".into());
+    }
+    let mut apps = load_manifest()?;
+    apps.sort_by_key(|a| a.name.to_lowercase());
+    Ok(std::thread::scope(|s| {
+        let handles: Vec<_> = apps
+            .iter()
+            .map(|app| {
+                s.spawn(move || {
+                    let mut item = ArchiveItem {
+                        app_id: app.id.clone(),
+                        app_name: app.name.clone(),
+                        item: app.archive.clone(),
+                        files: vec![],
+                        error: None,
+                    };
+                    match &app.archive {
+                        None => item.error = Some("Not set up yet".into()),
+                        Some(id) => match fetch_archive_metadata(id) {
+                            Ok(meta) => item.files = archive_files_from(&meta),
+                            Err(e) => item.error = Some(e),
+                        },
+                    }
+                    item
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    }))
+}
+
+/// Where hand-downloaded files go: the user's Downloads folder.
+fn save_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("HOPPER_DOWNLOAD_DIR") {
+        return PathBuf::from(d);
+    }
+    #[cfg(target_os = "android")]
+    return data_dir().join("downloads");
+    #[cfg(not(target_os = "android"))]
+    dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+        .unwrap_or_else(|| data_dir().join("downloads"))
+}
+
+/// "name.ext" that does not exist yet: adds " (1)", " (2)" ... before the extension when needed.
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (1..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .expect("an unused name exists")
+}
+
+/// Writes through to a file while hashing with both algorithms and reporting progress.
+struct ArchiveWriter<W: Write, F: FnMut(u64)> {
+    inner: W,
+    sha256: Sha256,
+    sha1: sha1::Sha1,
+    done: u64,
+    report: F,
+}
+
+impl<W: Write, F: FnMut(u64)> Write for ArchiveWriter<W, F> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.sha256.update(&buf[..n]);
+        self.sha1.update(&buf[..n]);
+        self.done += n as u64;
+        (self.report)(self.done);
+        Ok(n)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Downloads one file of an item by hand, checks it, and saves it in the Downloads folder.
+fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMut(u64, u64)) -> Result<ArchiveDownload, String> {
+    let item = app.archive.as_deref().ok_or_else(|| format!("{} has no Internet Archive item yet", app.name))?;
+    let meta = fetch_archive_metadata(item)?;
+    let entries = meta["files"].as_array().cloned().unwrap_or_default();
+    // Only a file the item really lists, and only a real file (not the archive's housekeeping).
+    let entry = entries
+        .iter()
+        .find(|f| f["name"].as_str() == Some(file))
+        .ok_or_else(|| format!("{file} is not in the item"))?;
+    let base = file.rsplit('/').next().unwrap_or(file).to_string();
+    describe_archive_file(&base).ok_or_else(|| "That file cannot be downloaded from here".to_string())?;
+    let total = entry.get("size").and_then(json_number).unwrap_or(0).max(0) as u64;
+    let want_sha1 = entry["sha1"].as_str().map(str::to_lowercase);
+
+    let dir = save_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let dest = unique_path(&dir, &base);
+    let part = dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")));
+
+    let url = format!("{}/download/{item}/{}", archive_base(), percent_encode(file));
+    let resp = ureq::get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| format!("Download failed: {e}"))?;
+    let (sha256, sha1) = {
+        let mut w = ArchiveWriter {
+            inner: fs::File::create(&part).map_err(|e| e.to_string())?,
+            sha256: Sha256::new(),
+            sha1: <sha1::Sha1 as Digest>::new(),
+            done: 0,
+            report: |done| progress(done, total.max(done)),
+        };
+        let copied = io::copy(&mut resp.into_reader(), &mut w);
+        let flushed = w.flush();
+        if let Err(e) = copied.and(flushed) {
+            let _ = fs::remove_file(&part);
+            return Err(format!("Download failed: {e}"));
+        }
+        (to_hex(&w.sha256.finalize()), to_hex(&w.sha1.finalize()))
+    };
+
+    let discard = |why: &str| -> String {
+        let _ = fs::remove_file(&part);
+        why.to_string()
+    };
+    let mut verified: Vec<String> = Vec::new();
+    if let Some(want) = want_sha1 {
+        if want != sha1 {
+            return Err(discard("The download did not match the Internet Archive's checksum, so it was discarded."));
+        }
+        verified.push("Internet Archive checksum".into());
+    }
+    // A checksum file the developer uploaded alongside, when it lists this file.
+    for e in entries.iter().filter(|f| f["name"].as_str().map_or(false, |n| n.to_lowercase().contains("sha256")) && f.get("size").and_then(json_number).unwrap_or(0) < (1 << 20)) {
+        let Some(sums_name) = e["name"].as_str() else { continue };
+        let sums_url = format!("{}/download/{item}/{}", archive_base(), percent_encode(sums_name));
+        let Ok(r) = ureq::get(&sums_url).set("User-Agent", "hopper-launcher").call() else { continue };
+        let mut text = String::new();
+        if r.into_reader().take(1 << 20).read_to_string(&mut text).is_err() {
+            continue;
+        }
+        if let Some(want) = expected_hash(&text, &base) {
+            if want != sha256 {
+                return Err(discard("The download did not match the published SHA256SUMS, so it was discarded."));
+            }
+            verified.push("SHA256SUMS".into());
+            break;
+        }
+    }
+
+    fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    if base.to_lowercase().ends_with(".appimage") {
+        make_executable(&dest)?;
+    }
+    #[allow(unused_mut)]
+    let mut handed_off = false;
+    #[cfg(target_os = "android")]
+    if base.to_lowercase().ends_with(".apk") {
+        android_call("installApk", serde_json::json!({ "path": dest.to_string_lossy() }))?;
+        handed_off = true;
+    }
+    let size = fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    Ok(ArchiveDownload { path: dest.to_string_lossy().into_owned(), size, verified, handed_off })
 }
 
 // ---------- existing installs ----------
@@ -848,6 +1208,51 @@ fn skip_entry(app: &AppEntry, tag: &str) -> Result<(), String> {
     save_state(&state)
 }
 
+/// Lists what is preserved on the Internet Archive. Only works while the backup is switched on.
+#[tauri::command]
+async fn archive_list() -> Result<Vec<ArchiveItem>, String> {
+    tauri::async_runtime::spawn_blocking(archive_overview).await.map_err(|e| e.to_string())?
+}
+
+/// Downloads one archived file by hand, reporting progress as it goes.
+#[tauri::command]
+async fn archive_download(app: tauri::AppHandle, id: String, file: String) -> Result<ArchiveDownload, String> {
+    use tauri::Emitter;
+    if !load_settings().archive_enabled {
+        return Err("The Internet Archive backup is switched off.".into());
+    }
+    let entry = find_app(&id)?;
+    let name = file.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut last = 0u64;
+        archive_download_blocking(&entry, &file, |done, total| {
+            if done >= total || done.saturating_sub(last) >= 512 * 1024 {
+                last = done;
+                let _ = app.emit("archive-progress", serde_json::json!({ "file": name, "done": done, "total": total }));
+            }
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The developer's page on the Internet Archive, where the backups are kept. The address is fixed
+/// here, so the page can never ask for a different one.
+const ARCHIVE_PROFILE_URL: &str = "https://archive.org/details/@gameh0pper";
+
+#[tauri::command]
+fn open_archive_profile() -> Result<(), String> {
+    open_with_system(ARCHIVE_PROFILE_URL)
+}
+
+#[tauri::command]
+fn set_archive_enabled(enabled: bool) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.archive_enabled = enabled;
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
 #[tauri::command]
 fn skip_update(id: String, tag: String) -> Result<(), String> {
     skip_entry(&find_app(&id)?, &tag)
@@ -907,6 +1312,8 @@ struct SettingsView {
     first_run: bool,
     /// True when the user has dragged the apps into their own order.
     custom_order: bool,
+    /// Whether the Internet Archive backup is switched on.
+    archive_enabled: bool,
     existing_mode: String,
     search_folders: bool,
     /// Whether the launcher will search folders at all under the current choice.
@@ -929,6 +1336,7 @@ fn settings_view() -> SettingsView {
     SettingsView {
         first_run: !settings.first_run_done,
         custom_order: !settings.app_order.is_empty(),
+        archive_enabled: settings.archive_enabled,
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -1065,6 +1473,10 @@ pub fn run() {
             launch_app,
             uninstall_app,
             skip_update,
+            archive_list,
+            archive_download,
+            set_archive_enabled,
+            open_archive_profile,
             open_repo
         ])
         .run(tauri::generate_context!())
@@ -1088,7 +1500,7 @@ mod tests {
     static ENV: Mutex<()> = Mutex::new(());
 
     fn entry(id: &str, name: &str) -> AppEntry {
-        AppEntry { id: id.into(), name: name.into(), tagline: String::new(), repo: "me/x".into(), accent: None, untested_on: vec![] }
+        AppEntry { id: id.into(), name: name.into(), tagline: String::new(), repo: "me/x".into(), accent: None, untested_on: vec![], archive: None }
     }
 
     fn script(path: &Path, body: &str, mode: u32) {
@@ -1211,6 +1623,187 @@ mod tests {
         let known = vec![entry("a", "a"), entry("b", "b")];
         let cleaned = clean_order(vec!["b".into(), "zzz".into(), "a".into(), "b".into()], &known);
         assert_eq!(cleaned, ["b", "a"]);
+    }
+
+    // ---------- Internet Archive backup ----------
+
+    /// Metadata in the shape the archive really returns, with real file names from the items.
+    fn item_json(files: &[(&str, &str, &str)]) -> Vec<u8> {
+        let list: Vec<_> = files
+            .iter()
+            .map(|(name, size, sha1)| serde_json::json!({"name": name, "size": size, "sha1": sha1, "source": "original", "mtime": "1793300000"}))
+            .collect();
+        serde_json::to_vec(&serde_json::json!({"metadata": {"title": "x"}, "files": list})).unwrap()
+    }
+
+    #[test]
+    fn archive_files_are_told_apart_from_real_item_listings() {
+        let class = |n: &str| describe_archive_file(n).map(|c| (c.os, c.kind, c.group, c.debug));
+        // the archive's own housekeeping and checksum files are never listed
+        for hidden in ["hop-tunes_files.xml", "hop-tunes_meta.xml", "hop-tunes_meta.sqlite", "SHA256SUMS", "SHA256SUMS-windows", "SHA256SUMS.txt", "KIT-SHA256SUMS", "Hop-tunes-1.4.0-x86_64.AppImage.zsync", "__ia_thumb.jpg"] {
+            assert!(class(hidden).is_none(), "{hidden} should be hidden");
+        }
+        // programs, with the lower-case extensions the archive stores
+        assert_eq!(class("Hop-tunes-1.4.0-x86_64.appimage"), Some(("linux", "AppImage".into(), "program", false)));
+        assert_eq!(class("HopCast-release-0.1.15.0-x86_64.appimage"), Some(("linux", "AppImage".into(), "program", false)));
+        assert_eq!(class("HopCast-debug-0.1.15.0-x86_64.appimage"), Some(("linux", "AppImage".into(), "program", true)));
+        assert_eq!(class("Alias-Maker-Debug-x86_64.appimage").unwrap().3, true);
+        assert_eq!(class("HopCast-windows-x64-0.1.15.0.zip"), Some(("windows", "Zip".into(), "program", false)));
+        assert_eq!(class("HopCast-android-0.1.15.0.apk"), Some(("android", "APK".into(), "program", false)));
+        assert_eq!(class("Anti-Social-Setup-0.23.0-win-x64.exe"), Some(("windows", "Installer".into(), "program", false)));
+        assert_eq!(class("Anti-Social-0.23.0-win-x64-portable.exe"), Some(("windows", "Portable".into(), "program", false)));
+        assert_eq!(class("Sudo.Make.Art.0.1.2.exe"), Some(("windows", "Program (.exe)".into(), "program", false)));
+        assert_eq!(class("Anti-Social-0.23.0-linux-amd64.deb").unwrap().1, ".deb");
+        assert_eq!(class("alias-maker-installer.run").unwrap().1, "Installer (.run)");
+        assert_eq!(class("alias-maker-1.5.1-1-any.pkg.tar.zst").unwrap().1, "Arch package");
+        // other systems and extras are kept but sorted into their own groups
+        assert_eq!(class("Anti-Social-0.23.0-3ds.3dsx").unwrap().0, "console");
+        assert_eq!(class("Anti-Social-0.23.0-switch.nro").unwrap().1, "Switch");
+        assert_eq!(class("Anti-Social-0.23.0-wiiu.wuhb").unwrap().1, "Wii U");
+        assert_eq!(class("hop-tunes-1.4.0.tar.gz").unwrap().2, "source");
+        assert_eq!(class("hopcast-bin-aur-0.1.15.0.tar.gz").unwrap().2, "packaging");
+        assert_eq!(class("hop-tunes-1.4.0-flathub-kit.tar.gz").unwrap().2, "packaging");
+        assert_eq!(class("Hop-tunes-x86_64.flatpak").unwrap().1, "Flatpak");
+    }
+
+    #[test]
+    fn archive_listing_is_sorted_newest_first_and_reads_odd_versions() {
+        let meta: serde_json::Value = serde_json::from_slice(&item_json(&[
+            ("HopTunes-1.3.2-x86_64.appimage", "10", "a"),
+            ("HopTunes-1.10.0-x86_64.appimage", "10", "a"),
+            ("HopTunes-1.4.0-x86_64.appimage", "10", "a"),
+            ("Sudo.Make.Art.0.1.2.exe", "5", "a"),
+            ("app-debug.apk", "5", "a"),
+            ("hop-tunes_meta.xml", "5", "a"),
+        ]))
+        .unwrap();
+        let files = archive_files_from(&meta);
+        let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
+        // 1.10.0 is newer than 1.4.0 (compared number by number, not as text); unversioned files go last
+        assert_eq!(names, ["HopTunes-1.10.0-x86_64.appimage", "HopTunes-1.4.0-x86_64.appimage", "HopTunes-1.3.2-x86_64.appimage", "Sudo.Make.Art.0.1.2.exe", "app-debug.apk"]);
+        assert_eq!(files[3].version.as_deref(), Some("0.1.2"));
+        assert_eq!(files[0].size, 10);
+        assert_eq!(files[0].mtime, Some(1793300000));
+        assert_eq!(version_from_name("HopCast-release-0.1.15.0-x86_64.appimage"), Some("0.1.15.0".into()));
+    }
+
+    #[test]
+    fn archive_addresses_are_safe() {
+        assert!(valid_item("anti-social-") && valid_item("sudo.-make.-art") && valid_item("hop-tunes"));
+        assert!(!valid_item("") && !valid_item("a/b") && !valid_item("a b") && !valid_item("a?x=1") && !valid_item("../x"));
+        assert_eq!(percent_encode("My App 1.0 (x).appimage"), "My%20App%201.0%20%28x%29.appimage");
+        assert_eq!(percent_encode("v1/a-b_c.d~e"), "v1/a-b_c.d~e");
+    }
+
+    #[test]
+    fn archive_downloads_are_checked_and_saved_safely() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-archive-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("HOPPER_DATA_DIR", root.join("data"));
+        std::env::set_var("HOPPER_DOWNLOAD_DIR", root.join("downloads"));
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_ARCHIVE_BASE", format!("http://127.0.0.1:{port}"));
+
+        let body: &[u8] = b"#!/bin/sh\nexit 0\n";
+        let good_sha1 = to_hex(&<sha1::Sha1 as Digest>::digest(body));
+        let good_sha256 = sha(body);
+        let app = AppEntry { archive: Some("test-item".into()), ..entry("tool", "Tool") };
+        let publish_item = |sha1: &str, sums: &str| {
+            let mut r = routes.lock().unwrap();
+            r.clear();
+            r.insert(
+                "/metadata/test-item".into(),
+                item_json(&[("Tool-1.2.0-x86_64.appimage", "17", sha1), ("SHA256SUMS", "100", "x"), ("test-item_meta.xml", "5", "x")]),
+            );
+            r.insert("/download/test-item/Tool-1.2.0-x86_64.appimage".into(), body.to_vec());
+            // the developer's checksum file names the file with the GitHub spelling (capital letters)
+            r.insert("/download/test-item/SHA256SUMS".into(), sums.as_bytes().to_vec());
+        };
+
+        // A good file is saved, made runnable, and checked two ways, with upper/lower case ignored.
+        publish_item(&good_sha1, &format!("{good_sha256}  Tool-1.2.0-x86_64.AppImage\n"));
+        let got = archive_download_blocking(&app, "Tool-1.2.0-x86_64.appimage", |_, _| {}).unwrap();
+        assert_eq!(got.verified, ["Internet Archive checksum", "SHA256SUMS"]);
+        assert_eq!(fs::read(&got.path).unwrap(), body);
+        assert!(got.path.ends_with("Tool-1.2.0-x86_64.appimage"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(fs::metadata(&got.path).unwrap().permissions().mode() & 0o111, 0, "an AppImage must be runnable");
+        }
+
+        // A second download never overwrites the first.
+        let again = archive_download_blocking(&app, "Tool-1.2.0-x86_64.appimage", |_, _| {}).unwrap();
+        assert!(again.path.ends_with("Tool-1.2.0-x86_64 (1).appimage"), "{}", again.path);
+        assert!(Path::new(&got.path).exists());
+
+        // A file that does not match the archive's checksum is thrown away, with no leftovers.
+        let before = fs::read_dir(root.join("downloads")).unwrap().count();
+        publish_item("0000000000000000000000000000000000000000", &format!("{good_sha256}  Tool-1.2.0-x86_64.appimage\n"));
+        let err = archive_download_blocking(&app, "Tool-1.2.0-x86_64.appimage", |_, _| {}).unwrap_err();
+        assert!(err.contains("Internet Archive's checksum"), "{err}");
+        assert_eq!(fs::read_dir(root.join("downloads")).unwrap().count(), before, "a bad download left a file behind");
+
+        // So does one that fails the developer's own SHA256SUMS.
+        publish_item(&good_sha1, &format!("{}  Tool-1.2.0-x86_64.AppImage\n", "f".repeat(64)));
+        let err = archive_download_blocking(&app, "Tool-1.2.0-x86_64.appimage", |_, _| {}).unwrap_err();
+        assert!(err.contains("SHA256SUMS"), "{err}");
+        assert_eq!(fs::read_dir(root.join("downloads")).unwrap().count(), before);
+
+        // Only files the item really lists, and real files, can be fetched.
+        assert!(archive_download_blocking(&app, "../../etc/passwd", |_, _| {}).is_err());
+        assert!(archive_download_blocking(&app, "test-item_meta.xml", |_, _| {}).is_err());
+        assert!(archive_download_blocking(&entry("none", "None"), "x.appimage", |_, _| {}).unwrap_err().contains("no Internet Archive item"));
+
+        // A missing item says so plainly.
+        routes.lock().unwrap().insert("/metadata/test-item".into(), b"{}".to_vec());
+        assert!(fetch_archive_metadata("test-item").unwrap_err().contains("does not exist"));
+
+        std::env::remove_var("HOPPER_ARCHIVE_BASE");
+        std::env::remove_var("HOPPER_DOWNLOAD_DIR");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_backup_is_off_by_default_and_never_calls_out_while_off() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!Settings::default().archive_enabled);
+        let root = std::env::temp_dir().join(format!("hopper-archive-off-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        // Nothing is listening here: if the code tried to call out it would fail differently.
+        std::env::set_var("HOPPER_ARCHIVE_BASE", "http://127.0.0.1:1");
+        assert!(archive_overview().unwrap_err().contains("switched off"));
+        assert!(!settings_view().archive_enabled);
+        set_archive_enabled(true).unwrap();
+        assert!(settings_view().archive_enabled);
+        // On: apps without an item say so, and an unreachable archive is an error for that app only.
+        let items = archive_overview().unwrap();
+        assert!(items.iter().all(|i| i.error.is_some()));
+        set_archive_enabled(false).unwrap();
+        assert!(archive_overview().is_err());
+        std::env::remove_var("HOPPER_ARCHIVE_BASE");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Needs the internet: reads your real archive items. Run with `cargo test real_archive -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn real_archive_items_are_readable() {
+        for app in load_manifest().unwrap() {
+            let item = app.archive.clone().unwrap_or_else(|| panic!("{} has no archive item", app.name));
+            // HOPPER_REAL_META_DIR: item listings saved earlier (for machines that cannot reach archive.org directly).
+            let meta = match std::env::var_os("HOPPER_REAL_META_DIR") {
+                Some(dir) => serde_json::from_slice(&fs::read(Path::new(&dir).join(format!("{item}.json"))).unwrap()).unwrap(),
+                None => fetch_archive_metadata(&item).unwrap_or_else(|e| panic!("{item}: {e}")),
+            };
+            let files = archive_files_from(&meta);
+            let programs: Vec<_> = files.iter().filter(|f| f.group == "program" && !f.debug).collect();
+            println!("{:<16} {:<16} {:>2} files shown, {:>2} programs: {}", app.name, item, files.len(), programs.len(), programs.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>().join(", "));
+            assert!(!programs.is_empty(), "{item} lists no programs");
+        }
     }
 
     #[test]
@@ -1450,6 +2043,7 @@ mod tests {
             repo: "me/app".into(),
             accent: None,
             untested_on: vec![],
+            archive: None,
         };
         let status = || {
             let l = list_apps_from(vec![app.clone()]);

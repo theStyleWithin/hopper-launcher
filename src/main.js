@@ -305,6 +305,175 @@ async function quietCheck() {
   }
 }
 
+// ---------- Internet Archive backup ----------
+
+const archiveState = { items: null, error: null, app: "all", system: "mine", search: "", extras: false, note: "", noteIsError: false };
+const archiveSaved = new Set();
+let archiveStarted = false;
+
+function fmtSize(bytes) {
+  if (!bytes) return "size unknown";
+  if (bytes < 1048576) return Math.max(1, Math.round(bytes / 1024)) + " KB";
+  if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
+  return (bytes / 1073741824).toFixed(2) + " GB";
+}
+function fmtDate(secs) {
+  return secs ? new Date(secs * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "date unknown";
+}
+
+/** Show or hide the sidebar to match the setting. Nothing is fetched while it is off. */
+async function applyArchive() {
+  const on = !!settings?.archive_enabled;
+  $("layout").classList.toggle("with-archive", on);
+  $("archive").hidden = !on;
+  if (!on) return;
+  renderArchive();
+  if (!archiveStarted) {
+    archiveStarted = true;
+    widenForArchive();
+    loadArchive();
+  }
+}
+// Switching it off and on again asks the archive afresh.
+function resetArchive() { archiveStarted = false; archiveState.items = null; archiveState.error = null; }
+
+/** Make the window wide enough for the list to sit beside the tiles (desktop only). */
+async function widenForArchive() {
+  if (device?.os === "android" || window.innerWidth >= 1240) return;
+  try {
+    const { getCurrentWindow } = window.__TAURI__.window;
+    const { LogicalSize } = window.__TAURI__.dpi;
+    await getCurrentWindow().setSize(new LogicalSize(1320, Math.max(window.innerHeight, 800)));
+  } catch (e) { /* the list simply moves below the tiles when the window stays narrow */ }
+}
+
+async function loadArchive() {
+  archiveState.items = null;
+  archiveState.error = null;
+  renderArchive();
+  try {
+    archiveState.items = await invoke("archive_list");
+  } catch (e) {
+    archiveState.error = String(e);
+  }
+  renderArchive();
+}
+
+function archiveVisible(file, item) {
+  const s = archiveState;
+  if (s.app !== "all" && item.app_id !== s.app) return false;
+  if (s.search && !file.name.toLowerCase().includes(s.search.toLowerCase())) return false;
+  if (!s.extras && (file.group !== "program" || file.debug)) return false;
+  if (s.system === "mine" && file.group === "program" && (file.os !== device.os || (file.arch !== "any" && file.arch !== device.arch))) return false;
+  return true;
+}
+
+function renderArchive() {
+  const box = $("archive");
+  if (box.hidden) return;
+  const s = archiveState;
+  const head = el("div", { className: "head" }, el("h2", { id: "archive-title", textContent: "Internet Archive backup" }));
+  const profile = el("a", { href: "#", textContent: "archive.org/details/@gameh0pper" });
+  profile.onclick = (e) => { e.preventDefault(); invoke("open_archive_profile").catch((err) => say(String(err), true)); };
+  head.append(el("div", { className: "cap" }, document.createTextNode("Older versions, kept as a safety net. Use the tiles first. These backups come from the developer's page on the Internet Archive: "), profile));
+
+  const appSel = el("select"); appSel.setAttribute("aria-label", "App");
+  appSel.add(new Option("All apps", "all"));
+  (s.items || []).forEach((i) => appSel.add(new Option(i.app_name, i.app_id)));
+  appSel.value = s.app;
+  appSel.onchange = () => { s.app = appSel.value; renderArchive(); };
+  const sysSel = el("select"); sysSel.setAttribute("aria-label", "System");
+  sysSel.add(new Option("My system", "mine")); sysSel.add(new Option("All systems", "all"));
+  sysSel.value = s.system;
+  sysSel.onchange = () => { s.system = sysSel.value; renderArchive(); };
+  const search = el("input", { type: "search", placeholder: "Search file names, e.g. 1.2.0", value: s.search });
+  search.setAttribute("aria-label", "Search file names");
+  search.oninput = () => {
+    s.search = search.value;
+    renderArchive();
+    // the sidebar was rebuilt, so put the cursor back in the new box, at the end of what was typed
+    const again = $("archive").querySelector("input[type=search]");
+    if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); }
+  };
+  const extras = el("input", { type: "checkbox", checked: s.extras });
+  extras.onchange = () => { s.extras = extras.checked; renderArchive(); };
+  const filters = el("div", { className: "filters" }, el("div", { className: "two" }, appSel, sysSel), search,
+    el("label", { className: "opt" }, extras, document.createTextNode("Also show debug, source and packaging files")));
+
+  const refresh = button("Refresh", "", () => loadArchive());
+  const list = el("div", { className: "list" });
+  let shown = 0, total = 0;
+  if (s.items === null && !s.error) {
+    list.append(el("div", { className: "note", textContent: "Asking the Internet Archive…" }));
+  } else if (s.error) {
+    list.append(el("div", { className: "note", textContent: s.error }));
+  } else {
+    s.items.forEach((item) => {
+      total += item.files.length;
+      if (s.app !== "all" && item.app_id !== s.app) return;
+      const files = item.files.filter((f) => archiveVisible(f, item));
+      shown += files.length;
+      list.append(el("div", { className: "grp" }, document.createTextNode(item.app_name), el("span", { textContent: item.error ? "" : `${files.length} file${files.length === 1 ? "" : "s"}` })));
+      if (item.error) list.append(el("div", { className: "note", textContent: item.error }));
+      else if (!files.length) list.append(el("div", { className: "note", textContent: item.files.length ? "Nothing matches these filters." : "No files uploaded yet." }));
+      files.forEach((f) => list.append(archiveRow(item, f)));
+    });
+  }
+  const count = el("div", { className: "count" }, el("span", { textContent: s.items ? `Showing ${shown} of ${total} files · newest first` : "" }), refresh);
+  const status = el("div", { className: "status", textContent: s.note, hidden: !s.note });
+  if (s.noteIsError) status.style.color = "var(--warn)";
+  const foot = el("div", { className: "foot", textContent: "Downloads go to your Downloads folder and are checked against the archive's checksums." });
+  box.replaceChildren(head, filters, count, status, list, foot);
+}
+
+function archiveRow(item, f) {
+  const row = el("div", { className: "arow" });
+  const name = el("b", { textContent: f.name, title: f.name });
+  const bits = [f.version ? "v" + f.version : null, f.kind, fmtSize(f.size), fmtDate(f.mtime)].filter(Boolean);
+  const meta = el("small", { textContent: bits.join(" · "), title: bits.join(" · ") });
+  const btn = el("button", { type: "button", textContent: archiveSaved.has(f.name) ? "Saved ✓" : "Download" });
+  btn.dataset.file = f.name;
+  btn.onclick = () => archiveDownload(item, f, btn);
+  row.append(name, meta, btn);
+  return row;
+}
+
+/** Shows the result right in the sidebar, where the user is looking. */
+function archiveNote(text, isErr = false) {
+  archiveState.note = text;
+  archiveState.noteIsError = isErr;
+  const status = $("archive").querySelector(".status");
+  if (status) { status.textContent = text; status.hidden = false; status.style.color = isErr ? "var(--warn)" : ""; }
+  say(text, isErr);
+}
+
+async function archiveDownload(item, f, btn) {
+  btn.disabled = true;
+  btn.textContent = "0%";
+  archiveNote(`Downloading ${f.name}…`);
+  try {
+    const r = await invoke("archive_download", { id: item.app_id, file: f.name });
+    archiveSaved.add(f.name);
+    const checks = r.verified.length ? "Checked: " + r.verified.join(" and ") + "." : "No checksum was available to check it.";
+    archiveNote(r.handed_off ? `${f.name} downloaded. Android's installer opened. ${checks}` : `Saved to ${r.path}. ${checks}`);
+    btn.textContent = "Saved ✓";
+  } catch (e) {
+    archiveNote(String(e), true);
+    btn.textContent = "Download";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Progress arrives as events while a file downloads.
+try {
+  window.__TAURI__.event.listen("archive-progress", (e) => {
+    const { file, done, total } = e.payload;
+    const btn = [...document.querySelectorAll("#archive .arow button")].find((b) => b.dataset.file === file);
+    if (btn && total) btn.textContent = Math.min(100, Math.floor((done / total) * 100)) + "%";
+  });
+} catch (e) { /* no progress numbers; the download still works */ }
+
 // ---------- settings ----------
 
 const MODES = [
@@ -414,6 +583,19 @@ function renderSettings() {
     sheet.append(fr);
   }
 
+  sheet.append(el("h3", { textContent: "Internet Archive backup" }));
+  const archiveBox = el("input", { type: "checkbox", checked: settings.archive_enabled });
+  archiveBox.onchange = async () => {
+    try {
+      settings = await invoke("set_archive_enabled", { enabled: archiveBox.checked });
+    } catch (e) { say(String(e), true); }
+    if (!settings.archive_enabled) resetArchive();
+    applyArchive();
+    renderSettings();
+  };
+  sheet.append(el("label", { className: "choice" }, archiveBox, el("b", { textContent: "Show the Internet Archive backup" }),
+    el("span", { textContent: "Off by default. A safety net of older versions kept on the Internet Archive, in case a repository or GitHub itself is ever unavailable. When it is on, a list appears beside the apps and you pick a file yourself. The launcher only contacts archive.org while it is on." })));
+
   sheet.append(el("h3", { textContent: "Your apps" }));
   if (settings.custom_order) {
     sheet.append(button("Reset the order to alphabetical", "ghost", async () => {
@@ -522,6 +704,7 @@ setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but onl
     renderDevice();
     settings = await invoke("get_settings");
     await loadApps();
+    applyArchive();
     if (settings.first_run && device.os !== "android") openSettings(true);
     await refresh();
   } catch (e) {

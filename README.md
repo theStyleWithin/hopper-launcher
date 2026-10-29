@@ -31,6 +31,10 @@ update is available.
 
 *Below the tiles, a short "Before you install" panel.*
 
+![The launcher with the Internet Archive backup switched on: a list of archived files beside the app tiles, with filters and a search box.](docs/images/archive-sidebar.png)
+
+*The Internet Archive backup, which is off by default. When it is switched on in Settings, a list of preserved files appears beside the tiles, with filters and a search box. You pick a file yourself, and it is checked and saved to your Downloads folder.*
+
 ![The launcher in the Midnight and Paper (light) themes.](docs/images/themes.png)
 
 *Three themes (Cyberpunk is the default, shown above), plus an accent colour picker. Midnight and Paper are shown here.*
@@ -84,8 +88,14 @@ page says which systems it supports, and the launcher only shows the builds that
 - The launcher reads each app's latest GitHub release and shows only the builds
   that suit your device in a dropdown, best one first. Debug builds are ignored.
 - Downloads are checked against the release's `SHA256SUMS` file when one is published.
+- **Internet Archive backup (off by default).** As a safety net in case a repository, or GitHub itself,
+  is ever unavailable, older versions of each app are kept on the developer's Internet Archive page:
+  [archive.org/details/@gameh0pper](https://archive.org/details/@gameh0pper). Switch it on in Settings and a
+  list appears beside the apps. You choose the file yourself; it is saved to your Downloads folder and
+  checked against the archive's checksums (and the developer's `SHA256SUMS` when one is there). The launcher
+  only contacts archive.org while this is switched on, and it never switches to it by itself.
 - Launched apps run on their own, so closing the launcher never closes them.
-- It only talks to GitHub while it is open: when it starts, when you press "Check for updates",
+- It only talks to GitHub (and to archive.org, only if you switch the backup on) while it is open: when it starts, when you press "Check for updates",
   and every 3 hours after that (a quick "anything new?" question that costs GitHub almost nothing).
   Nothing runs when the launcher is closed, and no server of ours is involved.
 - How apps are installed: on Linux an AppImage is saved and made runnable; on Windows a zip is unpacked

@@ -6,28 +6,32 @@
       "name": "Alias Maker",
       "tagline": "Mario Maker for terminal commands",
       "repo": "theStyleWithin/Alias-maker",
-      "accent": "#2ee6a6"
+      "accent": "#2ee6a6",
+      "archive": "alias-maker"
     },
     {
       "id": "anti-social",
       "name": "Anti-Social",
       "tagline": "Social media where nobody sees your posts",
       "repo": "theStyleWithin/anti-social",
-      "accent": "#ff3ea5"
+      "accent": "#ff3ea5",
+      "archive": "anti-social-"
     },
     {
       "id": "hopcast",
       "name": "HopCast",
       "tagline": "Bloat-free, easy livestreaming",
       "repo": "theStyleWithin/hopcast",
-      "accent": "#7a5cff"
+      "accent": "#7a5cff",
+      "archive": "hop-cast"
     },
     {
       "id": "hop-tunes",
       "name": "HopTunes",
       "tagline": "Sleek, minimalist media player",
       "repo": "theStyleWithin/Hop-tunes",
-      "accent": "#ff5ea8"
+      "accent": "#ff5ea8",
+      "archive": "hop-tunes"
     },
     {
       "id": "sudo-make-art",
@@ -38,7 +42,8 @@
       "untested_on": [
         "windows",
         "android"
-      ]
+      ],
+      "archive": "sudo.-make.-art"
     },
     {
       "id": "sudo-make-music",
@@ -49,7 +54,8 @@
       "untested_on": [
         "windows",
         "android"
-      ]
+      ],
+      "archive": "sudo-make-music"
     }
   ]
 }

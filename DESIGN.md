@@ -79,6 +79,31 @@ crash on start (sudo make music and Alias Maker did exactly this). So the launch
 only what points into its own AppImage, keeps everything that came from the system, and
 does the same before opening a web link. When the launcher is not an AppImage, nothing is changed.
 
+## Internet Archive backup
+A manual safety net for the day a repository is taken down, or GitHub is unavailable for a while or for good.
+Older versions of each app are preserved on the Internet Archive (one item per app, named in `apps.json`
+under `archive`), and the launcher can list them.
+
+- **Off by default.** A switch in Settings turns it on. While it is off nothing is shown and archive.org is never
+  contacted (checked in the real app: zero requests off, six on). It never switches to the archive by itself, and
+  it is not wired into the install buttons. The user opens it on purpose and picks a file.
+- **A list beside the tiles,** not part of them. The window widens when it is switched on so the list can sit on
+  the right; in a narrow window or on a phone it sits below. Rows are a fixed height, grouped by app, newest first.
+  Filters: app, "my system" or "all systems", a search box, and an "also show debug, source and packaging files" tick.
+- **What is listed.** The launcher reads each item's file list and works out what each file is from its name, the
+  same way as for GitHub. The archive's own housekeeping files (`*_files.xml`, `*_meta.xml`, `*_meta.sqlite`) and
+  checksum files are never listed. It reads the archive's lower-cased extensions (`.appimage`) and odd version
+  numbers (`0.1.15.0`, `Sudo.Make.Art.0.1.2.exe`). Other systems (console builds) and extras (debug, source,
+  packaging) stay out of the way until asked for.
+- **Download.** A file is saved to the user's Downloads folder (never over an existing file; it gets " (1)"), and
+  AppImages are made runnable. It is checked against the archive's own SHA-1 for the file and, when the item has
+  a `SHA256SUMS` listing it (upper/lower case ignored), against that too. A mismatch deletes the download. Progress
+  is shown on the button. On Android an APK is handed to Android's installer.
+- **Source of the backups.** The sidebar links to the developer's page, `archive.org/details/@gameh0pper`, and says so.
+- **Not included:** the launcher itself (a manual download). The upload side is outside the launcher: files are
+  put into the items by hand, or by a workflow later.
+- **Privacy.** archive.org sees a connection only while the backup is switched on, like any website would.
+
 ## New releases and updates
 The launcher finds out about new releases by asking GitHub itself. It does not
 phone home to a server of ours, so nothing identifies the user and no server has

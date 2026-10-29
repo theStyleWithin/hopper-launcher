@@ -154,3 +154,39 @@ label.sub { font-size: 14px; color: var(--dim); }
 /* Make room: a slightly smaller corner button and app name, the same on every tile, so even the longest name fits. */
 .tile h2 { font-size: 18px; line-height: 24px; }
 .x { padding: 0 6px; font-size: 11px; }
+
+/* Internet Archive backup: a list beside the tiles, only when switched on */
+.layout.with-archive { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 24px; align-items: start; }
+.layout.with-archive > .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.archive { background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--dim); border-radius: 4px; display: flex; flex-direction: column; height: clamp(420px, calc(100vh - 252px), 700px); position: sticky; top: 16px; min-width: 0; }
+.archive .head { padding: 20px 20px 12px; }
+.archive h2 { font-size: 18px; line-height: 24px; font-weight: 600; }
+.archive .cap { color: var(--dim); font-size: 13px; line-height: 20px; margin-top: 4px; }
+.archive .cap a { color: var(--accent); word-break: break-all; }
+.archive .filters { display: grid; gap: 8px; padding: 0 20px 12px; border-bottom: 1px solid var(--line); }
+.archive .filters .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.archive input[type=search] { font: inherit; font-size: 14px; height: 40px; padding: 0 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; width: 100%; }
+.archive input[type=search]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.archive .opt { display: flex; gap: 8px; align-items: center; color: var(--dim); font-size: 13px; line-height: 20px; text-transform: none; letter-spacing: 0; }
+.archive .opt input { accent-color: var(--accent); }
+.archive .count { color: var(--dim); font-size: 12px; line-height: 16px; padding: 10px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; }
+.archive .count button { height: 24px; font-size: 12px; padding: 0 8px; background: transparent; color: var(--dim); border: 1px solid var(--line); }
+.archive .list { overflow-y: auto; flex: 1; scrollbar-width: thin; }
+.archive .grp { position: sticky; top: 0; z-index: 1; background: var(--panel-hi); font-size: 12px; line-height: 16px; letter-spacing: 1px; text-transform: uppercase; padding: 8px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 8px; }
+.archive .grp span { color: var(--dim); }
+.archive .note { color: var(--dim); font-size: 13px; line-height: 20px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+.archive .arow { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: 24px 28px; column-gap: 12px; align-items: center; height: 76px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+.archive .arow b { grid-column: 1 / -1; font-weight: 600; font-size: 14px; line-height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.archive .arow small { color: var(--dim); font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.archive .arow button { height: 28px; min-width: 88px; font-size: 13px; padding: 0 12px; background: transparent; color: var(--text); border: 1px solid var(--line); }
+.archive .arow:hover { background: var(--panel-hi); }
+.archive .arow:hover button:not(:disabled) { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.archive .foot { padding: 10px 20px; color: var(--dim); font-size: 12px; line-height: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 1100px) {
+  .layout.with-archive { display: block; }
+  .layout.with-archive > .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .archive { position: static; height: 560px; margin-top: 24px; }
+}
+@media (max-width: 880px) { .layout.with-archive > .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .layout.with-archive > .grid { grid-template-columns: minmax(0, 1fr); } }
+.archive .status { padding: 10px 20px; font-size: 12px; line-height: 16px; border-bottom: 1px solid var(--line); background: var(--panel-hi); word-break: break-all; max-height: 64px; overflow: hidden; }
