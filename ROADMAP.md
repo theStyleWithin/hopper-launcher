@@ -41,3 +41,4 @@ Work needed when this resumes:
 - Install location: apps live in the launcher's own folder (Linux `~/.local/share/hopper-launcher/apps/<id>/`,
   Windows `%LOCALAPPDATA%\hopper-launcher\apps\`), with a small state file tracking versions.
   Planned: add a desktop menu entry for each installed Linux app.
+- Android: see `ANDROID.md` for the plan (not started).
