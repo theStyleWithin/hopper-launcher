@@ -45,6 +45,10 @@ update is available.
 
 ![The launcher with the user's own picture as the background, dimmed so the solid tiles stay easy to read.](docs/images/custom-background.png)
 
+**Glass icons (optional).** Settings → Look lets you switch to clear glass-bubble icons beside each app. The classic look stays the default.
+
+![Glass icon look: a clear glass bubble in each app's colour beside its name.](docs/images/glass-icons.png)
+
 *Your own picture as the background (Settings, Background). The tiles stay solid so everything stays readable, and Dim and Blur sliders let you choose how much of the picture shows. (This is a sample picture.)*
 
 ![The launcher with no internet: the installed apps still show Launch, and the corner says offline.](docs/images/offline.png)
