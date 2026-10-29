@@ -1,9 +1,29 @@
 # Hopper Launcher
 
-The GameHopper launchpad: a small, lightweight desktop launcher for Linux that
+The GameHopper launchpad: a small, lightweight desktop launcher for Linux and Windows that
 gathers the GameHopper apps in one place. It launches the apps you have
 installed, downloads them from their GitHub releases when you don't, and tells
 you when an update is available.
+
+## What it looks like
+
+![The launcher's main window: six app tiles, each with a version dropdown and a button. HopCast has an update waiting, so its button reads Update with Launch anyway beside it.](docs/images/launcher-main.png)
+
+*The main window. Each app has a tile with a dropdown of the builds that suit your device and one button. Here HopCast has a newer release, so its button reads **Update**, with **Launch anyway** beside it. Anti-Social is up to date, and sudo make art has an update the user chose to skip. Drag the dots on a tile to put the apps in your own order.*
+
+![The first-run screen asking how to treat apps you already have: auto-detect, choose myself, or keep in place, with one existing copy found.](docs/images/first-run.png)
+
+*On first run the launcher asks whether you already have some of the apps. Your own files are never moved or deleted.*
+
+![The Before you install panel with four short notes.](docs/images/before-you-install.png)
+
+*Below the tiles, a short "Before you install" panel.*
+
+![The launcher in the Midnight and Paper (light) themes.](docs/images/themes.png)
+
+*Three themes (Cyberpunk is the default, shown above), plus an accent colour picker. Midnight and Paper are shown here.*
+
+These pictures use sample data. The versions and installs shown are made up for the screenshots.
 
 ## Apps
 
