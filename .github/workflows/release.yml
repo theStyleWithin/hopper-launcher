@@ -54,7 +54,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          prerelease: true
+          prerelease: false
           files: |
             out/*.AppImage
             out/SHA256SUMS
@@ -95,7 +95,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
-          prerelease: true
+          prerelease: false
           files: |
             out/*.exe
             out/*.zip
