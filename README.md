@@ -75,7 +75,7 @@ page says which systems it supports, and the launcher only shows the builds that
 - Install anything from gamehopper at your own risk. If you are unsure, try it in a virtual machine first.
 - If you have a problem, post it in the repository of the app that is giving you trouble.
 - The developer uses Linux and has tested only the Linux versions so far. Windows and Android versions are untested and may have bugs. Windows users are wanted, and your reports help.
-- The apps are free. If you enjoy them, a tip of any amount is appreciated (Cash App `$Normand64`), but there is no shame in freeloading.
+- The apps are free. If you enjoy them, a tip of any amount is appreciated (Cash App `$Normand64`), and you can also support the developer's [Locals](https://locals.com/gamehopper). But there is no shame in freeloading.
 
 ## How it works
 
