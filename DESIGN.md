@@ -82,9 +82,9 @@ does the same before opening a web link. When the launcher is not an AppImage, n
 ## Custom background
 Settings, "Background": the user picks their own picture; the aim is to use the empty space around the tiles
 without hurting the calm, orderly look.
-- **Accepted pictures.** PNG, JPEG or WebP, judged by what is really inside the file (its first bytes), not its
-  name, so an SVG (which can carry script), a GIF or a text file renamed `.png` is refused with a plain message.
-  Under 12 MB. Still pictures only, so nothing moves on its own.
+- **Accepted pictures.** PNG, JPEG, GIF or WebP, judged by what is really inside the file (its first bytes), not its
+  name, so an SVG (which can carry script), or a text file renamed `.png` is refused with a plain message.
+  Under 12 MB. GIFs are accepted and animate; SVG is not.
 - **A copy is kept** in the launcher's folder (`background/`), one picture at a time, so the background survives
   the original moving. The name is checked against the three allowed names before it is ever used as a path, so
   a tampered settings file cannot make the launcher read some other file. The picture is sent to the page as raw

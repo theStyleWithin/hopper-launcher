@@ -467,7 +467,7 @@ fn open_github_status_page() -> Result<(), String> {
 // it keeps working if the original moves. Only still pictures. Nothing is sent anywhere.
 
 const MAX_BACKGROUND_BYTES: u64 = 12 * 1024 * 1024;
-const BACKGROUND_NAMES: [(&str, &str); 3] = [("background.png", "image/png"), ("background.jpg", "image/jpeg"), ("background.webp", "image/webp")];
+const BACKGROUND_NAMES: [(&str, &str); 4] = [("background.png", "image/png"), ("background.gif", "image/gif"), ("background.jpg", "image/jpeg"), ("background.webp", "image/webp")];
 
 fn background_dir() -> PathBuf {
     data_dir().join("background")
@@ -483,6 +483,8 @@ fn image_kind(bytes: &[u8]) -> Option<&'static str> {
         Some("background.png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         Some("background.jpg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("background.gif")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("background.webp")
     } else {
@@ -499,7 +501,7 @@ fn set_background_from(path: &Path) -> Result<(), String> {
         return Err(format!("That picture is {} MB. Please choose one under 12 MB.", meta.len() / (1024 * 1024)));
     }
     let bytes = fs::read(path).map_err(|e| format!("Could not read that file: {e}"))?;
-    let name = image_kind(&bytes).ok_or_else(|| "That does not look like a PNG, JPEG or WebP picture.".to_string())?;
+    let name = image_kind(&bytes).ok_or_else(|| "That does not look like a PNG, JPEG, GIF or WebP picture.".to_string())?;
     let dir = background_dir();
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     for (old, _) in BACKGROUND_NAMES {
@@ -2709,11 +2711,14 @@ mod tests {
         assert!(read_background_bytes().is_err());
 
         // What is inside decides, not the name: a text file called .png is refused, and so is an SVG.
-        assert!(set_background_from(&put("fake.png", b"just some words")).unwrap_err().contains("PNG, JPEG or WebP"));
+        assert!(set_background_from(&put("fake.png", b"just some words")).unwrap_err().contains("PNG, JPEG, GIF or WebP"));
         assert!(set_background_from(&put("art.svg", b"<svg xmlns='http://www.w3.org/2000/svg'><script>x</script></svg>")).is_err());
         let mut gif = b"GIF89a".to_vec();
         gif.extend_from_slice(&[0; 20]);
-        assert!(set_background_from(&put("anim.gif", &gif)).is_err(), "animated pictures are not accepted");
+        set_background_from(&put("anim.gif", &gif)).unwrap();
+        assert_eq!(settings_view().bg_mime.as_deref(), Some("image/gif"));
+        assert_eq!(&read_background_bytes().unwrap()[..6], b"GIF89a");
+        clear_background().unwrap();
         assert!(set_background_from(&root.join("in")).unwrap_err().contains("not a file"));
         assert!(set_background_from(&root.join("in/missing.png")).is_err());
         assert!(!settings_view().bg_has, "a refused picture must not be saved");

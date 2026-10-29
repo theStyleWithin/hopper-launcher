@@ -70,6 +70,29 @@ function updatePrompt(app) {
   return updateAvailable(app) && !updateSkipped(app);
 }
 
+// Simple original line symbols, one per app, drawn inside the glass bubble (Look: Glass icons).
+const ICON_PATHS = {
+  "hop-tunes": '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>',
+  "hopcast": '<circle cx="12" cy="12" r="2"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>',
+  "alias-maker": '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3M12 15h5"/>',
+  "anti-social": '<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>',
+  "sudo-make-art": '<path d="M12 3a9 9 0 1 0 0 18c1.5 0 2-1 1.6-2.2-.5-1.3.4-2.3 1.7-2.3H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10.5" cy="7.5" r="1"/><circle cx="15.5" cy="7.5" r="1"/>',
+  "sudo-make-music": '<path d="M4 12v0M8 8v8M12 5v14M16 8v8M20 11v2"/>',
+};
+
+/** A clear glass bubble holding the app's symbol (or its first letter), tinted with the app's own colour. */
+function glassIcon(app) {
+  const bubble = el("span", { className: "gico" });
+  bubble.setAttribute("aria-hidden", "true");
+  const paths = ICON_PATHS[app.id];
+  if (paths) {
+    bubble.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+  } else {
+    bubble.append(el("b", { textContent: (app.name || "?").trim().charAt(0).toUpperCase() }));
+  }
+  return bubble;
+}
+
 /** In the slot of an app that can no longer be fetched (and is not installed): a short message instead. */
 function goneTile(app) {
   const t = el("section", { className: "tile gone off" }, el("p", { textContent: "I'm sorry, Dave. I can't help you." }));
@@ -98,8 +121,15 @@ function tile(app) {
 
   const grip = el("button", { className: "grip", type: "button", title: "Drag to move, or use the arrow keys" });
   grip.setAttribute("aria-label", `Move ${app.name}. Drag it, or press the arrow keys.`);
-  const top = el("div", { className: "top" }, grip, el("div", { className: "titles" }, el("h2", { textContent: app.name, title: app.name }), el("div", { className: "tag", textContent: app.tagline, title: app.tagline })));
-  if (app.installed) top.append(button(app.adopted ? "Forget" : "Uninstall", "x", () => uninstall(app), working));
+  const glass = look === "glass";
+  const top = el("div", { className: "top" }, grip, ...(glass ? [glassIcon(app)] : []), el("div", { className: "titles" }, el("h2", { textContent: app.name, title: app.name }), el("div", { className: "tag", textContent: app.tagline, title: app.tagline })));
+  if (app.installed) {
+    const word = app.adopted ? "Forget" : "Uninstall";
+    // In the glass look the label is a compact cross (so full names still fit); the words are still there for hover and screen readers.
+    const x = button(glass ? "✕" : word, "x", () => uninstall(app), working);
+    if (glass) { x.title = word; x.setAttribute("aria-label", `${word} ${app.name}`); }
+    top.append(x);
+  }
 
   const sel = el("select");
   sel.setAttribute("aria-label", "Version");
@@ -416,7 +446,7 @@ async function applyWallpaper() {
 async function chooseBackground() {
   const path = await window.__TAURI__.dialog.open({
     multiple: false, directory: false, title: "Choose a background picture",
-    filters: [{ name: "Pictures", extensions: ["png", "jpg", "jpeg", "webp"] }],
+    filters: [{ name: "Pictures", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
   });
   if (!path) return;
   try {
@@ -727,11 +757,19 @@ function renderSettings() {
     sheet.append(fr);
   }
 
+  sheet.append(el("h3", { textContent: "Look" }));
+  [["classic", "Classic", "The look it has always had: clean text tiles."],
+   ["glass", "Glass icons", "A clear glass bubble icon beside each app's name, tinted with that app's colour."]].forEach(([value, title, text]) => {
+    const radio = el("input", { type: "radio", name: "look", value, checked: look === value });
+    radio.onchange = () => setLook(value);
+    sheet.append(el("label", { className: "choice" }, radio, el("b", { textContent: title }), el("span", { textContent: text })));
+  });
+
   if (!phone) {
     sheet.append(el("h3", { textContent: "Background" }));
     sheet.append(el("p", { textContent: settings.bg_has
       ? "Showing your own picture behind the apps. The tiles stay solid so everything stays easy to read."
-      : "No picture chosen, so the plain theme background is used. You can use your own PNG, JPEG or WebP picture (under 12 MB). A copy is kept inside the launcher, so it keeps working if the original moves." }));
+      : "No picture chosen, so the plain theme background is used. You can use your own PNG, JPEG, GIF or WebP picture (under 12 MB; GIFs animate). A copy is kept inside the launcher, so it keeps working if the original moves." }));
     const row = el("div", { className: "bgrow" }, button(settings.bg_has ? "Choose a different image…" : "Choose an image…", "ghost", chooseBackground));
     if (settings.bg_has) row.append(button("Remove", "ghost", removeBackground));
     sheet.append(row);
@@ -858,6 +896,19 @@ $("reset").onclick = () => {
   checkContrast();
 };
 $("refresh").onclick = refresh;
+
+// ---------- look: classic or glass icons ----------
+
+let look = store.get("look") === "glass" ? "glass" : "classic"; // classic stays the default
+document.body.dataset.look = look;
+
+function setLook(value) {
+  look = value;
+  store.set("look", value);
+  document.body.dataset.look = value;
+  render();
+  renderSettings();
+}
 
 // ---------- start ----------
 
