@@ -72,7 +72,7 @@
           "os": "android",
           "arch": "any",
           "kind": "apk",
-          "planned": true
+          "asset": ".apk"
         }
       ]
     },
