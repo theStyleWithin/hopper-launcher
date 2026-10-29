@@ -5,7 +5,9 @@ Design phase started (see `DESIGN.md` and `design/mockup.html`). Previously on h
 The Tauri scaffold on this branch has never been compiled; start with a build check.
 
 ## Context
-- GitHub account is `gamehopper`. The old name `theStyleWithin` is a dead name: never use it.
+- The developer name is **gamehopper**. The GitHub repos still live at `theStyleWithin/<repo>`, and that path
+  stays as it is (set in `apps.json`). Show the name gamehopper in the app and docs; the old name only
+  appears inside those technical repo paths.
 - Everything stays in this one repo. No new repos or workspaces can be created.
 - Goals: sleek UI, minimal resource use (no background polling, no constant animation).
 - Apps are free. Avoid third-party brand names in any descriptions or branding.

@@ -5,35 +5,35 @@
       "id": "alias-maker",
       "name": "Alias Maker",
       "tagline": "Mario Maker for terminal commands",
-      "repo": "gamehopper/Alias-maker",
+      "repo": "theStyleWithin/Alias-maker",
       "accent": "#2ee6a6"
     },
     {
       "id": "anti-social",
       "name": "Anti-Social",
       "tagline": "Social media where nobody sees your posts",
-      "repo": "gamehopper/anti-social",
+      "repo": "theStyleWithin/anti-social",
       "accent": "#ff3ea5"
     },
     {
       "id": "hopcast",
       "name": "HopCast",
       "tagline": "Bloat-free, easy livestreaming",
-      "repo": "gamehopper/hopcast",
+      "repo": "theStyleWithin/hopcast",
       "accent": "#7a5cff"
     },
     {
       "id": "hop-tunes",
       "name": "HopTunes",
       "tagline": "Sleek, minimalist media player",
-      "repo": "gamehopper/Hop-tunes",
+      "repo": "theStyleWithin/Hop-tunes",
       "accent": "#ff5ea8"
     },
     {
       "id": "sudo-make-art",
       "name": "sudo make art",
       "tagline": "Offline, local-only design tool",
-      "repo": "gamehopper/sudo-make-art",
+      "repo": "theStyleWithin/sudo-make-art",
       "accent": "#ffb02e",
       "untested_on": [
         "windows",
@@ -44,7 +44,7 @@
       "id": "sudo-make-music",
       "name": "sudo make music",
       "tagline": "Offline AI music generation",
-      "repo": "gamehopper/sudo-make-music",
+      "repo": "theStyleWithin/sudo-make-music",
       "accent": "#19e3ff",
       "untested_on": [
         "windows",

@@ -38,6 +38,9 @@ struct InstalledApp {
     tag: String,
     /// The file the launcher starts.
     path: PathBuf,
+    /// True when the app was unpacked into its own folder (portable zip builds).
+    #[serde(default)]
+    folder: bool,
 }
 
 type State = HashMap<String, InstalledApp>;
@@ -48,6 +51,8 @@ struct AppInfo {
     entry: AppEntry,
     installed: bool,
     version: Option<String>,
+    /// Installed as a whole folder, which may hold the app's own settings.
+    folder: bool,
 }
 
 #[derive(Serialize)]
@@ -58,7 +63,7 @@ struct ReleaseInfo {
     error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 struct InstallResult {
     tag: String,
     /// True when a published checksum matched the download.
@@ -282,6 +287,18 @@ fn open_with_system(target: &str) -> Result<(), String> {
     }
 }
 
+/// Deletes release files (old versions of the program) directly inside `dir`, nothing else.
+fn remove_old_builds(dir: &Path) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        let is_build = e.file_name().to_str().map_or(false, |n| classify::classify(n).is_some());
+        if p.is_file() && is_build {
+            let _ = fs::remove_file(&p);
+        }
+    }
+}
+
 fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String> {
     let dev = device::detect();
     let release = latest_release(&app.repo)?;
@@ -314,15 +331,10 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
         None => false,
     };
 
-    // The new version is in hand and checked; now replace whatever was installed.
-    if let Ok(rd) = fs::read_dir(&app_dir) {
-        for e in rd.flatten() {
-            if e.file_name() != ".part" {
-                let p = e.path();
-                let _ = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
-            }
-        }
-    }
+    // The new version is in hand and checked. Replace the old program files only:
+    // anything else in the folder (settings a portable build keeps beside itself,
+    // an AppImage's .home/.config folders) belongs to the app and stays untouched.
+    remove_old_builds(&app_dir);
 
     let handed_off = is_handoff(&build.kind);
     let launch_path = if build.kind == "zip" {
@@ -345,7 +357,10 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
         save_state(&state)?;
         open_with_system(&launch_path.to_string_lossy())?;
     } else {
-        state.insert(app.id.clone(), InstalledApp { tag: release.tag_name.clone(), path: launch_path });
+        state.insert(
+            app.id.clone(),
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip" },
+        );
         save_state(&state)?;
     }
     Ok(InstallResult { tag: release.tag_name, verified, handed_off })
@@ -364,7 +379,12 @@ fn list_apps_from(entries: Vec<AppEntry>) -> Vec<AppInfo> {
         .into_iter()
         .map(|entry| {
             let managed = state.get(&entry.id).filter(|s| s.path.is_file());
-            AppInfo { installed: managed.is_some(), version: managed.map(|s| s.tag.clone()), entry }
+            AppInfo {
+                installed: managed.is_some(),
+                version: managed.map(|s| s.tag.clone()),
+                folder: managed.map_or(false, |s| s.folder),
+                entry,
+            }
         })
         .collect();
     apps.sort_by_key(|a| a.entry.name.to_lowercase());
@@ -450,11 +470,20 @@ fn launch_app(id: String) -> Result<(), String> {
     launch_entry(&find_app(&id)?)
 }
 
+/// Removes the program. A single-file install leaves any settings folders the app
+/// made next to it (the folder is removed only if nothing else is left in it).
+/// A portable folder install is removed whole, so the UI warns about that first.
 fn uninstall_entry(app: &AppEntry) -> Result<(), String> {
     let mut state = load_state();
-    state.remove(&app.id);
+    let entry = state.remove(&app.id);
     save_state(&state)?;
-    let _ = fs::remove_dir_all(data_dir().join("apps").join(&app.id));
+    let dir = data_dir().join("apps").join(&app.id);
+    if entry.map_or(false, |e| e.folder) {
+        let _ = fs::remove_dir_all(&dir);
+    } else {
+        remove_old_builds(&dir);
+        let _ = fs::remove_dir(&dir); // only succeeds when empty
+    }
     Ok(())
 }
 
@@ -511,6 +540,29 @@ mod tests {
         fs::write(d.join("a/b/deep.exe"), b"x").unwrap();
         fs::write(d.join("a/App.EXE"), b"x").unwrap();
         assert_eq!(find_exe(&d), Some(d.join("a/App.EXE")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn unzip_extracts_and_refuses_paths_that_escape() {
+        let d = std::env::temp_dir().join(format!("hopper-zip-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let zip_path = d.join("t.zip");
+        {
+            let mut w = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
+            let o = zip::write::SimpleFileOptions::default();
+            w.start_file("App/Prog.exe", o).unwrap();
+            w.write_all(b"exe").unwrap();
+            w.start_file("../evil.txt", o).unwrap();
+            w.write_all(b"evil").unwrap();
+            w.finish().unwrap();
+        }
+        let out = d.join("out");
+        fs::create_dir_all(&out).unwrap();
+        unzip(&zip_path, &out).unwrap();
+        assert_eq!(find_exe(&out), Some(out.join("App/Prog.exe")));
+        assert!(!d.join("evil.txt").exists(), "zip entry escaped the destination");
         fs::remove_dir_all(&d).unwrap();
     }
 
@@ -613,6 +665,11 @@ mod tests {
         assert_eq!((r.tag.as_str(), r.verified, r.handed_off), ("v1", true, false));
         assert_eq!(status(), (true, Some("v1".into())));
 
+        // The app makes its own settings folder beside the program.
+        let settings = data.join("apps/app/App-x86_64.AppImage.home/settings.json");
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, b"mine").unwrap();
+
         // Launching starts the app as its own program.
         launch_entry(&app).unwrap();
         for _ in 0..50 {
@@ -634,12 +691,15 @@ mod tests {
         publish(port, &routes, "v2", v2, &sha(v2));
         assert_eq!(install_blocking(&app, "App-x86_64.AppImage").unwrap().tag, "v2");
         assert_eq!(status(), (true, Some("v2".into())));
-        assert_eq!(fs::read_dir(data.join("apps/app")).unwrap().count(), 1, "old version was not cleaned up");
+        let left: Vec<_> = fs::read_dir(data.join("apps/app")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 2, "expected the new program and the settings folder, got {left:?}");
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "an update touched the app's settings");
 
-        // Uninstalling removes it.
+        // Uninstalling removes the program but keeps the app's own settings.
         uninstall_entry(&app).unwrap();
         assert_eq!(status(), (false, None));
-        assert!(!data.join("apps/app").exists());
+        assert!(!data.join("apps/app/App-x86_64.AppImage").exists());
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "uninstall deleted the app's settings");
 
         let _ = fs::remove_dir_all(&data);
     }

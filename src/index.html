@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="cyberpunk">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,14 +8,19 @@
 </head>
 <body>
   <header>
-    <div>
-      <h1>hopper<span>launcher</span></h1>
-      <p class="sub">the gamehopper launchpad</p>
+    <h1>hopper<b>launcher</b></h1>
+    <div class="controls">
+      <div><label for="theme">Theme</label>
+        <select id="theme"><option value="cyberpunk">Cyberpunk</option><option value="midnight">Midnight</option><option value="paper">Paper (light)</option></select></div>
+      <div><label for="accent">Accent</label>
+        <div class="pair"><input type="color" id="accent" value="#19e3ff" aria-label="Accent colour"><button id="reset" type="button">Reset</button></div></div>
+      <div><label>&nbsp;</label><button id="refresh" type="button">Check for updates</button></div>
     </div>
-    <button id="refresh" class="ghost" title="Check GitHub for updates">Check for updates</button>
   </header>
-  <main id="grid" aria-live="polite"></main>
-  <footer id="status"></footer>
+
+  <section class="device" aria-live="polite"><div><strong id="devname">Detecting…</strong><span id="devspec"></span></div><span id="devnote"></span></section>
+  <main class="grid" id="grid"></main>
+  <footer><span id="msg"></span><span id="hint"></span></footer>
   <script src="main.js"></script>
 </body>
 </html>
