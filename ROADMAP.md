@@ -33,3 +33,6 @@ Work needed when this resumes:
   latest release by file name (see `DESIGN.md`), so no per-platform build lists to maintain.
 - Platform notes: HopTunes has no Windows build. Alias Maker is Linux-only; an Android
   fake-terminal simulator for learners is planned but not ready.
+- Install location: apps live in the launcher's own folder (Linux `~/.local/share/hopper-launcher/apps/<id>/`,
+  Windows `%LOCALAPPDATA%\hopper-launcher\apps\`), with a small state file tracking versions.
+  Planned: add a desktop menu entry for each installed Linux app.

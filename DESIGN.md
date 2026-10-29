@@ -61,6 +61,15 @@ The recommendation is advice only. The user can pick any listed build.
 Releases that include `SHA256SUMS` files (HopCast does) let the launcher verify
 every download before installing it. Planned.
 
+## Installed apps and launching
+Once an app is installed its tile shows a **Launch** button in the same spot
+as Install, and the dropdown shows what is installed. The launcher starts the
+app as a fully separate program. Closing the launcher, even right after
+launching, never closes the app, so a user can pick a tool and put the launcher
+away. (An optional "close the launcher after launching" setting is a possible
+later addition.) Updates appear on the tile when a newer release exists, and
+install files live in the launcher's own folder (see the install notes in `ROADMAP.md`).
+
 ## Android
 On Android the launcher shows only `.apk` builds (nothing else), with the
 recommended one first. Tapping Install downloads the APK and hands it to

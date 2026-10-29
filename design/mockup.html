@@ -70,6 +70,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 .go { background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 600; width: 100%; }
 .go[disabled] { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 400; }
 footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px; min-height: 16px; }
+#msg { display: block; min-height: 16px; margin-bottom: 8px; color: var(--text); }
 #hint { color: var(--warn); }
 
 /* Cyberpunk flavour without noise: a single thin accent line, no glow or flicker. */
@@ -92,7 +93,7 @@ footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px
 
 <section class="device" aria-live="polite"><div><strong id="devname"></strong><span id="devspec"></span></div><span id="devnote"></span></section>
 <main class="grid" id="grid"></main>
-<footer><span id="hint"></span> Mockup only. File lists below are samples (HopCast's come from release v0.1.15; the others are guesses from READMEs). Hardware detection and downloads are simulated.</footer>
+<footer><span id="msg"></span> <span id="hint"></span> Mockup only. File lists below are samples (HopCast's come from release v0.1.15; the others are guesses from READMEs). Hardware detection and downloads are simulated.</footer>
 
 <script>
 /* Sample release file names. The real launcher reads these from each repo's latest GitHub release. */
@@ -104,6 +105,8 @@ const RELEASES = {
   "sudo make art": ["sudo-make-art-x86_64.AppImage","sudo-make-art-Setup.exe","sudo-make-art-portable.exe","sudo-make-art-android.apk"],
   "sudo make music": ["sudo-make-music-x86_64.AppImage","sudo-make-music-portable.exe","sudo-make-music-windows-folder.zip","sudo-make-music-android.apk"],
 };
+const installed = new Set();
+function say(m) { document.getElementById("msg").textContent = m; }
 const UNTESTED = {"sudo make art":["windows","android"], "sudo make music":["windows","android"]};
 const DEV = {
   windows:{name:"Windows PC", spec:"x86_64 · 16 GB RAM · discrete GPU", os:"windows", arch:"x86_64"},
@@ -154,7 +157,14 @@ function render() {
     if (v.length) {
       const untested = (UNTESTED[name] || []).includes(d.os) ? " · untested" : "";
       v.forEach((b, i) => sel.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind] + untested)));
-      btn.textContent = "Install";
+      if (installed.has(name)) {
+        sel.replaceChildren(new Option("Installed · " + KIND[v[0].kind])); sel.disabled = true;
+        btn.textContent = "Launch";
+        btn.onclick = () => say(name + " launched. You can close the launcher; the app keeps running on its own.");
+      } else {
+        btn.textContent = "Install";
+        btn.onclick = () => { installed.add(name); say(name + " installed (simulated)."); render(); };
+      }
     } else {
       sel.add(new Option("No " + d.name.split(" ")[0] + " build yet"));
       sel.disabled = true; btn.textContent = "Unavailable"; btn.disabled = true; t.classList.add("off");
@@ -163,7 +173,7 @@ function render() {
   }));
 }
 const TAGLINE = {"Alias Maker":"Mario Maker for terminal commands","Anti-Social":"Social media where nobody sees your posts","HopCast":"Bloat-free, easy livestreaming","HopTunes":"Sleek, minimalist media player","sudo make art":"Offline, local-only design tool","sudo make music":"Offline AI music generation"};
-$("dev").onchange = render;
+$("dev").onchange = () => { installed.clear(); say(""); render(); };
 $("theme").onchange = (e) => { root.dataset.theme = e.target.value; if (!localStorage_has()) syncPicker(); checkContrast(); };
 render();
 

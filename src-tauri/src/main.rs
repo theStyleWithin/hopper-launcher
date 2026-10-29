@@ -229,10 +229,23 @@ fn launch_app(id: String) -> Result<(), String> {
         .or_else(|| app.command.as_deref().and_then(on_path))
         .ok_or_else(|| format!("{} is not installed", app.name))?;
 
-    let mut child = Command::new(target)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+    let mut cmd = Command::new(target);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    // Put the app in its own process group (Windows: detached) so closing the
+    // launcher, or the terminal it was started from, never takes the app with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", app.name))?;
     // Reap the child when it exits so it never lingers as a zombie.
