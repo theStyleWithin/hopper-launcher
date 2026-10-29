@@ -1,9 +1,9 @@
 # Hopper Launcher
 
-The GameHopper launchpad: a small, lightweight desktop launcher for Linux and Windows that
-gathers the GameHopper apps in one place. It launches the apps you have
-installed, downloads them from their GitHub releases when you don't, and tells
-you when an update is available.
+The GameHopper launchpad: a small, lightweight launcher that gathers the GameHopper apps in
+one place. It runs on Linux and Windows, and there is an Android test build. It launches the apps
+you have installed, downloads them from their GitHub releases when you don't, and tells you when an
+update is available.
 
 > [!WARNING]
 > **Tested on Linux only, for now.** The developer has tested these apps on Linux only. On Linux,
@@ -29,13 +29,28 @@ you when an update is available.
 
 ![The Before you install panel with four short notes.](docs/images/before-you-install.png)
 
-*Below the tiles, a short "Before you install" panel.*
+*Below the tiles, a short "Before you install" panel. The wording in this picture is from version 0.1.2 and still says "Linux and Android"; the warning at the top of this page is the current guidance (tested on Linux only).*
 
 ![The launcher in the Midnight and Paper (light) themes.](docs/images/themes.png)
 
 *Three themes (Cyberpunk is the default, shown above), plus an accent colour picker. Midnight and Paper are shown here.*
 
 These pictures use sample data. The versions and installs shown are made up for the screenshots.
+
+## Download
+
+Get the launcher from the [Releases page](../../releases). Pick the file for your system:
+
+| System | File | Notes |
+|---|---|---|
+| Linux (x86_64) | `Hopper-Launcher-<version>-x86_64.AppImage` | Mark it as executable, then run it. If your system has no FUSE, run it with `--appimage-extract-and-run`. |
+| Windows (64-bit) | `Hopper-Launcher-Setup-<version>-x64.exe` or `Hopper-Launcher-<version>-windows-x64.zip` | The installer sets it up; the zip is a single program you can run from anywhere. Untested by the developer. |
+| Android | none yet | An APK exists only as a test build and has never been run on a phone. It is not released. |
+
+Every release also has checksum files: `SHA256SUMS` for Linux and `SHA256SUMS-windows` for Windows.
+To check a download, run `sha256sum -c SHA256SUMS` on Linux, or
+`Get-FileHash <file> -Algorithm SHA256` in Windows PowerShell and compare it with the checksum file.
+Please also scan the file with [VirusTotal](https://www.virustotal.com) first (see the warning above).
 
 ## Apps
 
@@ -48,7 +63,8 @@ These pictures use sample data. The versions and installs shown are made up for 
 | sudo make art | Offline, local-only design tool |
 | sudo make music | Offline AI music generation |
 
-All of them are free to use. The launcher itself collects no data and needs no account.
+All of them are free to use. The launcher itself collects no data and needs no account. Each app's own
+page says which systems it supports, and the launcher only shows the builds that suit your device.
 
 ## Before you install
 
@@ -65,10 +81,16 @@ All of them are free to use. The launcher itself collects no data and needs no a
   that suit your device in a dropdown, best one first. Debug builds are ignored.
 - Downloads are checked against the release's `SHA256SUMS` file when one is published.
 - Launched apps run on their own, so closing the launcher never closes them.
-- It only contacts GitHub when it opens or when you press "Check for updates".
-  Nothing runs in the background.
-- Apps it installs live in `~/.local/share/hopper-launcher/`. Updating or
-  uninstalling never touches an app's own settings or data.
+- It only talks to GitHub while it is open: when it starts, when you press "Check for updates",
+  and every 3 hours after that (a quick "anything new?" question that costs GitHub almost nothing).
+  Nothing runs when the launcher is closed, and no server of ours is involved.
+- How apps are installed: on Linux an AppImage is saved and made runnable; on Windows a zip is unpacked
+  and an installer is handed to Windows; on Android the APK is handed to Android's own installer.
+- Apps it installs live in `~/.local/share/hopper-launcher/` on Linux and `%APPDATA%\hopper-launcher\`
+  on Windows. Updating or uninstalling never touches an app's own settings or data.
+- Apps it starts get your system's own settings, not the launcher's. (Earlier versions passed the
+  launcher's AppImage settings on, which stopped sudo make music, Alias Maker and HopCast from starting.
+  That is fixed in 0.1.2.)
 - Already have some of the apps? Settings, "Apps you already have", lets you
   choose: auto-detect, choose myself, or keep in place. Your own files are never
   moved or deleted.
@@ -76,7 +98,9 @@ All of them are free to use. The launcher itself collects no data and needs no a
   appears, the button becomes Update, with Launch anyway beside it and a choice to skip that version.
 - Drag the handle on a tile (or use the arrow keys) to put the apps in your own order.
 - Themes: Cyberpunk, Midnight and Paper, plus an accent colour picker.
-- To use your own list, place an `apps.json` in `~/.config/hopper-launcher/`.
+- Each app has a **Report issue** button in Settings that opens that app's own issues page.
+- To use your own list, place an `apps.json` in `~/.config/hopper-launcher/` (Linux) or
+  `%APPDATA%\hopper-launcher\` (Windows).
 
 ## Building
 
@@ -88,7 +112,16 @@ cargo test            # run the tests
 cargo build --release
 ```
 
-Status: the Linux desktop version is working. Windows and Android versions are planned (see ROADMAP.md).
+**Status**
+- **Linux:** working, and tested by the developer.
+- **Windows:** the installer and zip are built automatically on GitHub and compile cleanly, but have not
+  been run or tested by the developer.
+- **Android:** a debug APK can be built with the manual "Android test build" workflow. It builds and
+  contains the install and launch plugin, but it has never been run on a phone and is not released.
+
+**Releases.** Pushing a version tag such as `v0.1.3` runs the Release workflow. It runs the tests, builds
+the Linux AppImage and the Windows installer and zip, writes the checksum files, and attaches everything
+to the release. See `ROADMAP.md` and `DESIGN.md` for the plans and the reasoning behind the design.
 
 ## Disclaimer
 
