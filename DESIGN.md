@@ -83,12 +83,17 @@ Shipped: **Cyberpunk** (default: dark navy, cyan accent, one thin neon line,
 no glow), **Midnight** (calm blue), **Paper** (light). Users can add their own
 theme file with the same tokens.
 
+**Accent picker:** a colour picker plus Reset in the header. The chosen accent
+applies on top of any theme and is remembered between sessions. The text on
+accent-coloured buttons switches between dark and white automatically so it
+stays readable, and a note appears if the colour is too faint against the
+theme's background.
+
 ## Platform notes
 - **Windows:** unsigned installers trigger a SmartScreen warning; explain it in the UI.
 - **Android:** see the Android section above.
 - **Linux:** AppImages are downloaded and made executable, as in the scaffold.
 
 ## Open questions for the owner
-1. Is the built-in theme list enough, or should users also get an accent-colour picker?
-2. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
+1. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
    consider rewording it, like the media player description.
