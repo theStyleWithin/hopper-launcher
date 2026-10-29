@@ -62,7 +62,8 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
 .chip { display: inline-block; font-size: 12px; line-height: 16px; padding: 4px 8px; border: 1px solid currentColor; border-radius: 2px; }
 .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.no { color: var(--dim); }
 .row { display: flex; flex-direction: column; align-items: stretch; gap: 16px; }
-.row .chip { align-self: flex-start; white-space: nowrap; }
+.row select { width: 100%; }
+.row select:disabled { color: var(--dim); }
 .go { background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 600; width: 100%; }
 .go[disabled] { background: transparent; color: var(--dim); border: 1px solid var(--line); font-weight: 400; }
 footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px; height: 16px; }
@@ -85,49 +86,76 @@ footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px
 
 <section class="device" aria-live="polite"><div><strong id="devname"></strong><span id="devspec"></span></div><span id="devnote"></span></section>
 <main class="grid" id="grid"></main>
-<footer>Mockup only. Hardware detection and downloads are simulated here. Apps are listed alphabetically and the layout never reorders itself.</footer>
+<footer>Mockup only. File lists below are samples (HopCast's come from release v0.1.15; the others are guesses from READMEs). Hardware detection and downloads are simulated.</footer>
 
 <script>
-const APPS = [
-  {n:"Alias Maker", t:"Mario Maker for terminal commands", b:[["linux","x86_64","AppImage"]]},
-  {n:"Anti-Social", t:"Social media where nobody sees your posts", b:[["linux","x86_64","AppImage"],["windows","x86_64","Installer"],["android","any","APK"]]},
-  {n:"HopCast", t:"Bloat-free, easy livestreaming", b:[["linux","x86_64","AppImage"],["windows","x86_64","Zip"],["android","any","APK"]]},
-  {n:"HopTunes", t:"Sleek, minimalist media player", b:[["linux","x86_64","AppImage"],["android","any","APK",2]]},
-  {n:"sudo make art", t:"Offline, local-only design tool", b:[["linux","x86_64","AppImage"],["windows","x86_64","Installer",1],["android","any","APK",1]]},
-  {n:"sudo make music", t:"Offline AI music generation", b:[["linux","x86_64","AppImage"],["windows","x86_64","Portable",1],["android","any","APK",1]]},
-];
+/* Sample release file names. The real launcher reads these from each repo's latest GitHub release. */
+const RELEASES = {
+  "Alias Maker": ["Alias-Maker-1.0-x86_64.AppImage"],
+  "Anti-Social": ["Anti-Social-Setup-0.22.0.exe","Anti-Social-0.22.0-portable.exe","Anti-Social-0.22.0.AppImage","Anti-Social-0.22.0.deb","Anti-Social-0.22.0.apk"],
+  "HopCast": ["HopCast-release-0.1.15-x86_64.AppImage","HopCast-debug-0.1.15-x86_64.AppImage","hopcast-source-0.1.15.tar.gz","hopcast-bin-aur-0.1.15.tar.gz","hopcast-flatpak-0.1.15.tar.gz","SHA256SUMS","HopCast-windows-x64-0.1.15.zip","SHA256SUMS-windows","HopCast-android-0.1.15.apk","SHA256SUMS-android","hopcast-fdroid-0.1.15.tar.gz"],
+  "HopTunes": ["HopTunes-1.0-x86_64.AppImage"],
+  "sudo make art": ["sudo-make-art-x86_64.AppImage","sudo-make-art-Setup.exe","sudo-make-art-portable.exe","sudo-make-art-android.apk"],
+  "sudo make music": ["sudo-make-music-x86_64.AppImage","sudo-make-music-portable.exe","sudo-make-music-windows-folder.zip","sudo-make-music-android.apk"],
+};
+const UNTESTED = {"sudo make art":["windows","android"], "sudo make music":["windows","android"]};
 const DEV = {
   windows:{name:"Windows PC", spec:"x86_64 · 16 GB RAM · discrete GPU", os:"windows", arch:"x86_64"},
   linux:{name:"Linux PC", spec:"x86_64 · 32 GB RAM · discrete GPU", os:"linux", arch:"x86_64"},
-  android:{name:"Android phone", spec:"arm64 · 8 GB RAM", os:"android", arch:"arm64"},
+  android:{name:"Android phone", spec:"arm64 · 8 GB RAM", os:"android", arch:"aarch64"},
   arm:{name:"Linux ARM board", spec:"aarch64 · 4 GB RAM", os:"linux", arch:"aarch64"},
 };
-const $ = (id) => document.getElementById(id);
-function pick(app, d) {
-  return app.b.find(([os, arch]) => os === d.os && (arch === "any" || arch === d.arch));
+const KIND = {appimage:"AppImage", deb:".deb", rpm:".rpm", installer:"Installer", msi:"MSI", portable:"Portable", exe:".exe", zip:"Zip", apk:"APK"};
+const RANK = {appimage:0, deb:1, rpm:2, installer:0, msi:1, portable:2, exe:3, zip:4, apk:0};
+
+/* The sorting rules. Anything that is not clearly a build for an OS is ignored. */
+function classify(file) {
+  const f = file.toLowerCase();
+  if (/sha256|\.sig$|\.asc$|\.txt$|\.tar\.gz$|debug/.test(f)) return null;   // checksums, source, packaging, debug
+  let os, kind;
+  if (f.endsWith(".appimage")) { os = "linux"; kind = "appimage"; }
+  else if (f.endsWith(".deb")) { os = "linux"; kind = "deb"; }
+  else if (f.endsWith(".rpm")) { os = "linux"; kind = "rpm"; }
+  else if (f.endsWith(".apk")) { os = "android"; kind = "apk"; }
+  else if (f.endsWith(".msi")) { os = "windows"; kind = "msi"; }
+  else if (f.endsWith(".exe")) { os = "windows"; kind = /setup|install/.test(f) ? "installer" : /portable/.test(f) ? "portable" : "exe"; }
+  else if (f.endsWith(".zip") && /win/.test(f)) { os = "windows"; kind = "zip"; }
+  else return null;
+  const arch = /aarch64|arm64/.test(f) ? "aarch64" : /x86_64|x64|amd64|win64/.test(f) ? "x86_64" : os === "android" ? "any" : "x86_64";
+  return {file, os, kind, arch};
 }
+function variants(app, dev) {
+  return RELEASES[app].map(classify)
+    .filter((b) => b && b.os === dev.os && (b.arch === "any" || b.arch === dev.arch))
+    .sort((a, b) => RANK[a.kind] - RANK[b.kind] || a.file.localeCompare(b.file));
+}
+
+const $ = (id) => document.getElementById(id);
 function render() {
   const d = DEV[$("dev").value];
   $("devname").textContent = "Detected: " + d.name;
   $("devspec").textContent = d.spec;
-  const n = APPS.filter((a) => { const m = pick(a, d); return m && m[3] !== 2; }).length;
-  $("devnote").textContent = n + " of " + APPS.length + " apps have a build for this device";
-  $("grid").replaceChildren(...APPS.map((a) => {
-    const m = pick(a, d), t = document.createElement("section");
+  const apps = Object.keys(RELEASES).sort((a, b) => a.localeCompare(b));
+  $("devnote").textContent = apps.filter((a) => variants(a, d).length).length + " of " + apps.length + " apps have a build for this device";
+  $("grid").replaceChildren(...apps.map((name) => {
+    const v = variants(name, d), t = document.createElement("section");
     t.className = "tile";
-    const planned = m && m[3] === 2;
-    const status = planned ? ["no", "Coming soon"] : m ? (m[3] ? ["warn", "Build available (untested)"] : ["ok", "Recommended: " + m[2]])
-                     : ["no", "Not available for " + d.name.split(" ")[0] + " yet"];
-    t.innerHTML = `<div><h2></h2><div class="tag"></div></div><div class="row"><span class="chip ${status[0]}"></span><button class="go"></button></div>`;
-    t.querySelector("h2").textContent = a.n;
-    t.querySelector(".tag").textContent = a.t;
-    t.querySelector(".chip").textContent = status[1];
-    const btn = t.querySelector(".go");
-    btn.textContent = planned ? "Coming soon" : m ? "Install" : "Unavailable";
-    btn.disabled = !m || planned;
+    t.innerHTML = `<div><h2></h2><div class="tag"></div></div><div class="row"><select aria-label="Version"></select><button class="go"></button></div>`;
+    t.querySelector("h2").textContent = name;
+    t.querySelector(".tag").textContent = TAGLINE[name];
+    const sel = t.querySelector("select"), btn = t.querySelector(".go");
+    if (v.length) {
+      const untested = (UNTESTED[name] || []).includes(d.os) ? " · untested" : "";
+      v.forEach((b, i) => sel.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind] + untested)));
+      btn.textContent = "Install";
+    } else {
+      sel.add(new Option("No " + d.name.split(" ")[0] + " build yet"));
+      sel.disabled = true; btn.textContent = "Unavailable"; btn.disabled = true;
+    }
     return t;
   }));
 }
+const TAGLINE = {"Alias Maker":"Mario Maker for terminal commands","Anti-Social":"Social media where nobody sees your posts","HopCast":"Bloat-free, easy livestreaming","HopTunes":"Sleek, minimalist media player","sudo make art":"Offline, local-only design tool","sudo make music":"Offline AI music generation"};
 $("dev").onchange = render;
 $("theme").onchange = (e) => { document.documentElement.dataset.theme = e.target.value; };
 render();

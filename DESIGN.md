@@ -1,7 +1,8 @@
 # Hopper Launcher design
 
 Open `design/mockup.html` in a browser to see it. The theme picker and the
-"simulate device" picker are live; hardware detection and downloads are faked.
+"simulate device" picker are live. The file lists in the mockup are samples
+(HopCast's come from release v0.1.15), and downloads are simulated.
 
 ## What it is
 One launcher for Windows, Linux and Android that shows the GameHopper apps and
@@ -14,34 +15,55 @@ is a deliberate edit to that file.
 
 Current list: Alias Maker, Anti-Social, HopCast, HopTunes, sudo make art, sudo make music.
 
-## Manifest (schema 2)
-Each app has a `builds` list. A build is `os` (`linux`, `windows`, `android`),
-`arch` (`x86_64`, `aarch64`, or `any`), `kind` (`appimage`, `installer`,
-`portable`, `zip`, `apk`), `asset` (text the release file name must contain),
-and optional `untested: true` or `planned: true` (the build does not exist yet; shown as "Coming soon" with no Install button). An app with no build for the current device
-stays visible, greyed out, as "Not available for <OS> yet".
+## Manifest (schema 3)
+Each app is just: `id`, `name`, `tagline`, `repo`, `accent`, and an optional
+`untested_on` list (for example `["windows", "android"]`). There is no list of
+builds to maintain. The launcher reads each repo's latest GitHub release and
+works out the builds from the file names.
 
-Matching rule: `asset` must be specific enough to match exactly one file in the
-release. HopCast v0.1.15 ships both release and debug AppImages, so its Linux
-build matches `HopCast-release`, not `.AppImage`. Windows builds delivered as a
-`zip` are unpacked by the launcher into its own folder.
+## How builds are found
+For the user's OS and CPU architecture, the launcher looks at every file in the
+repo's latest release and keeps only the ones that are clearly a build:
+
+| File | Counts as |
+|---|---|
+| `.AppImage`, `.deb`, `.rpm` | Linux |
+| `.exe` (installer if the name has "setup"/"install", portable if it has "portable"), `.msi`, `.zip` with "win" in the name | Windows |
+| `.apk` | Android |
+
+Ignored: checksums (`SHA256SUMS`), signatures, `.tar.gz` (source and packaging
+files), anything marked `debug`, and any file it can't classify. Files with
+an `aarch64`/`arm64` or `x86_64`/`x64`/`amd64` tag are matched to the CPU;
+untagged Linux and Windows files are assumed to be x86_64.
+
+Builds for other systems never appear. A Linux user never sees Windows files,
+and a Windows user never sees Linux files.
+
+## The dropdown
+Each tile has one dropdown listing the matching builds, with the best one
+preselected and labelled "Recommended". Order: on Linux AppImage, then .deb,
+then .rpm; on Windows installer, MSI, portable, plain .exe, then zip.
+Zip builds are unpacked by the launcher into its own folder. If an app has no
+build for the device, the tile stays in place with a disabled dropdown reading
+"No <OS> build yet", so the grid never changes shape.
 
 ## Hardware detector
 Reads, locally and without sending anything anywhere: OS, CPU architecture,
-RAM, and whether a discrete GPU exists. The launcher then
-1. keeps only builds matching OS and architecture,
-2. prefers the easiest format (installer or AppImage over zip),
-3. labels the pick "Recommended", or "Build available (untested)" when flagged.
-Optional per-build requirements such as `min_ram_gb` can be added to an app
-once the owner knows real numbers; they are not guessed here.
-The recommendation is advice only. The user can always pick another build.
+RAM, and whether a discrete GPU exists. OS and architecture decide which files
+are shown. RAM and GPU can later be used for warnings on heavy apps such as
+`sudo make music`; real numbers are needed first, so none are guessed.
+The recommendation is advice only. The user can pick any listed build.
+
+## Safety
+Releases that include `SHA256SUMS` files (HopCast does) let the launcher verify
+every download before installing it. Planned.
 
 ## Look and feel (built for people who like order)
 - One 8px spacing grid. Every tile is the same size.
 - Apps are always in alphabetical order. The layout never shifts or reorders
   itself, and there is no auto-playing motion, glitch or flicker.
-- Text is never clipped inconsistently: taglines are one line, status is one line.
-- Same structure in every tile: name, tagline, status label, one button.
+- Taglines are one line and every tile has the same structure: name, tagline,
+  dropdown, one button.
 - Visible keyboard focus; all colours chosen for readable contrast.
 - Respects the system "reduce motion" setting.
 
@@ -58,8 +80,8 @@ theme file with the same tokens.
 - **Linux:** AppImages are downloaded and made executable, as in the scaffold.
 
 ## Open questions for the owner
-1. Release file names for HopCast, HopTunes and Alias Maker on Windows/Android (none yet?).
-2. Should the Android launcher hand APKs to the system installer, or just open the download?
+1. Should an app with no build for the device stay visible and greyed out (as in the mockup), or be hidden?
+2. On Android, should the launcher hand APKs to the system installer, or just open the download?
 3. Is the built-in theme list enough, or should users also get an accent-colour picker?
 4. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
    consider rewording it, like the media player description.

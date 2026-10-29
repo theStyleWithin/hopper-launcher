@@ -29,6 +29,7 @@ Work needed when this resumes:
 - Choose a license (README currently says none chosen, all rights reserved).
 - Optional: auto-discover apps from a repo topic like `gamehopper-app`.
 - Optional: GitHub Actions workflow so each app publishes an AppImage release.
-- Platform plans: HopTunes has no Windows build and none is planned (Android only, planned).
-  Alias Maker stays Linux-only; an Android fake-terminal simulator for learners is planned
-  but not ready, so it is not listed in `apps.json` yet. HopCast has Windows and Android planned.
+- Design decision: `apps.json` lists only repos. Builds are discovered from each repo's
+  latest release by file name (see `DESIGN.md`), so no per-platform build lists to maintain.
+- Platform notes: HopTunes has no Windows build. Alias Maker is Linux-only; an Android
+  fake-terminal simulator for learners is planned but not ready.
