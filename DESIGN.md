@@ -36,6 +36,9 @@ files), anything marked `debug`, and any file it can't classify. Files with
 an `aarch64`/`arm64` or `x86_64`/`x64`/`amd64` tag are matched to the CPU;
 untagged Linux and Windows files are assumed to be x86_64.
 
+Debug builds are left out on purpose. They exist for people reporting bugs,
+who can find them on the repo's GitHub releases page without the launcher.
+
 Builds for other systems never appear. A Linux user never sees Windows files,
 and a Windows user never sees Linux files.
 
