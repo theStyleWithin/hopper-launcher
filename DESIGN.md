@@ -21,6 +21,11 @@ Each app has a `builds` list. A build is `os` (`linux`, `windows`, `android`),
 and optional `untested: true` or `planned: true` (the build does not exist yet; shown as "Coming soon" with no Install button). An app with no build for the current device
 stays visible, greyed out, as "Not available for <OS> yet".
 
+Matching rule: `asset` must be specific enough to match exactly one file in the
+release. HopCast v0.1.15 ships both release and debug AppImages, so its Linux
+build matches `HopCast-release`, not `.AppImage`. Windows builds delivered as a
+`zip` are unpacked by the launcher into its own folder.
+
 ## Hardware detector
 Reads, locally and without sending anything anywhere: OS, CPU architecture,
 RAM, and whether a discrete GPU exists. The launcher then

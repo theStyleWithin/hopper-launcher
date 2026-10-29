@@ -60,19 +60,19 @@
           "os": "linux",
           "arch": "x86_64",
           "kind": "appimage",
-          "asset": ".AppImage"
+          "asset": "HopCast-release"
         },
         {
           "os": "windows",
           "arch": "x86_64",
-          "kind": "installer",
-          "asset": ".exe"
+          "kind": "zip",
+          "asset": "HopCast-windows-x64"
         },
         {
           "os": "android",
           "arch": "any",
           "kind": "apk",
-          "asset": ".apk"
+          "asset": "HopCast-android"
         }
       ]
     },
