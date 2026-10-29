@@ -413,12 +413,60 @@ async function quietCheck() {
 // ---------- background picture ----------
 
 let wallpaperUrl = null;
+let stillUrl = null; // first frame of an animated picture, shown whenever the animation should rest
 let bgMessage = ""; // shown inside Settings, where the user is looking
 
 function setWallpaperLook(dim, blur) {
   root.style.setProperty("--bg-dim", String(dim / 100));
   root.style.setProperty("--bg-blur", blur + "px");
 }
+
+/** A small still copy of a GIF's first frame (at most 1600 px wide), so resting costs almost nothing. */
+function firstFrame(url) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const k = Math.min(1, 1600 / img.naturalWidth);
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(img.naturalWidth * k));
+        c.height = Math.max(1, Math.round(img.naturalHeight * k));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob((b) => resolve(b ? URL.createObjectURL(b) : null), "image/jpeg", 0.9);
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+// An animated background only moves when the launcher is quiet: window in front, nobody touching the mouse or
+// keyboard for a few seconds, no blur (blurring moving pictures is the costly part), and the person hasn't asked
+// their system for less motion. The moment anything is touched it rests on its first frame, so clicking and
+// launching never compete with the animation.
+const IDLE_MS = 3000;
+let userBusy = false;
+let idleTimer = null;
+function animationAllowed() {
+  return store.get("animate_bg") !== "off" && !userBusy && document.visibilityState === "visible" && document.hasFocus()
+    && !(settings && settings.bg_blur > 0) && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+function updateWallpaperMotion() {
+  const layer = $("wallpaper");
+  if (!wallpaperUrl) return;
+  const src = stillUrl && !animationAllowed() ? stillUrl : wallpaperUrl;
+  const css = `url("${src}")`;
+  if (layer.style.backgroundImage !== css) layer.style.backgroundImage = css;
+}
+function touched() {
+  if (!stillUrl) return;
+  if (!userBusy) { userBusy = true; updateWallpaperMotion(); }
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { userBusy = false; updateWallpaperMotion(); }, IDLE_MS);
+}
+for (const ev of ["pointermove", "pointerdown", "keydown", "wheel"]) addEventListener(ev, touched, { passive: true });
+for (const ev of ["focus", "blur"]) addEventListener(ev, updateWallpaperMotion);
+document.addEventListener("visibilitychange", updateWallpaperMotion);
 
 /** Show (or remove) the user's own picture behind everything. Desktop only for now. */
 async function applyWallpaper() {
@@ -427,6 +475,7 @@ async function applyWallpaper() {
     layer.classList.remove("on");
     layer.style.backgroundImage = "";
     if (wallpaperUrl) { URL.revokeObjectURL(wallpaperUrl); wallpaperUrl = null; }
+    if (stillUrl) { URL.revokeObjectURL(stillUrl); stillUrl = null; }
     return;
   }
   try {
@@ -434,8 +483,10 @@ async function applyWallpaper() {
     const url = URL.createObjectURL(new Blob([bytes], { type: settings.bg_mime || "image/png" }));
     if (wallpaperUrl) URL.revokeObjectURL(wallpaperUrl);
     wallpaperUrl = url;
-    layer.style.backgroundImage = `url("${url}")`;
+    if (stillUrl) { URL.revokeObjectURL(stillUrl); stillUrl = null; }
+    if (settings.bg_mime === "image/gif") stillUrl = await firstFrame(url);
     setWallpaperLook(settings.bg_dim, settings.bg_blur);
+    updateWallpaperMotion();
     layer.classList.add("on");
   } catch (e) {
     layer.classList.remove("on");
@@ -774,10 +825,15 @@ function renderSettings() {
     if (settings.bg_has) row.append(button("Remove", "ghost", removeBackground));
     sheet.append(row);
     if (bgMessage) sheet.append(el("p", { className: "bgwarn", textContent: bgMessage }));
+    if (settings.bg_has && settings.bg_mime === "image/gif") {
+      const anim = el("input", { type: "checkbox", checked: store.get("animate_bg") !== "off" });
+      anim.onchange = () => { store.set("animate_bg", anim.checked ? "on" : "off"); updateWallpaperMotion(); };
+      sheet.append(el("label", { className: "choice" }, anim, el("b", { textContent: "Animate the GIF" }), el("span", { textContent: "To stay light on your PC it only moves when the launcher is idle and in front, rests on its first frame whenever you move the mouse or type, and stays still when Blur is on." })));
+    }
     if (settings.bg_has) {
       const save = async (dim, blur) => { try { settings = await invoke("set_background_look", { dim, blur }); } catch (e) { bgMessage = String(e); } };
       sheet.append(slider("Dim", 90, settings.bg_dim, "%", (v) => setWallpaperLook(v, settings.bg_blur), (v) => save(v, settings.bg_blur)));
-      sheet.append(slider("Blur", 20, settings.bg_blur, " px", (v) => setWallpaperLook(settings.bg_dim, v), (v) => save(settings.bg_dim, v)));
+      sheet.append(slider("Blur", 20, settings.bg_blur, " px", (v) => setWallpaperLook(settings.bg_dim, v), (v) => save(settings.bg_dim, v).then(updateWallpaperMotion)));
     }
   }
 

@@ -118,7 +118,7 @@ page says which systems it supports, and the launcher only shows the builds that
 - **Your own background.** In Settings, "Choose an image…" lets you use your own PNG, JPEG or WebP picture
   (under 12 MB) behind the apps. A copy is kept inside the launcher, so it keeps working if the original is
   moved or deleted, and nothing is sent anywhere. The tiles stay solid so text stays readable; Dim and Blur
-  sliders and a Remove button put you in control. PNG, JPEG, WebP and GIF (animated GIFs play; no SVG). Desktop for now.
+  sliders and a Remove button put you in control. PNG, JPEG, WebP and GIF (no SVG). Animated GIFs only move while the launcher is idle and in front, and rest on their first frame whenever you use the mouse or keyboard, so launching apps never competes with the animation. Desktop for now.
 - **Download counts.** A small green number on each tile shows how many times that app has been downloaded,
   added up across every version and every system (Linux, Windows and Android all count toward one total). It
   uses GitHub's own public download numbers, so nothing is sent and nobody is identified. Checksum, debug and

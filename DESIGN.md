@@ -84,7 +84,10 @@ Settings, "Background": the user picks their own picture; the aim is to use the 
 without hurting the calm, orderly look.
 - **Accepted pictures.** PNG, JPEG, GIF or WebP, judged by what is really inside the file (its first bytes), not its
   name, so an SVG (which can carry script), or a text file renamed `.png` is refused with a plain message.
-  Under 12 MB. GIFs are accepted and animate; SVG is not.
+  Under 12 MB. GIFs are accepted; SVG is not.
+- **Animation stays light.** A GIF shows a small still of its first frame and only animates after 3 s with no mouse/keyboard
+  activity, while the window is in front and visible, with Blur at 0 and no "reduce motion" system preference. Any input
+  returns it to the still frame at once; Settings has an "Animate the GIF" switch to turn it off.
 - **A copy is kept** in the launcher's folder (`background/`), one picture at a time, so the background survives
   the original moving. The name is checked against the three allowed names before it is ever used as a path, so
   a tampered settings file cannot make the launcher read some other file. The picture is sent to the page as raw
