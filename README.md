@@ -5,6 +5,18 @@ gathers the GameHopper apps in one place. It launches the apps you have
 installed, downloads them from their GitHub releases when you don't, and tells
 you when an update is available.
 
+> [!WARNING]
+> **Tested on Linux only, for now.** The developer has tested these apps on Linux only. On Linux,
+> every app launches as it should (earlier launch problems are fixed in version 0.1.2 and later, so use
+> the latest release). The Windows and Android versions exist but have **not** been tested by the
+> developer and may have bugs.
+>
+> **Download at your own risk.** If you are unsure, run it in a virtual machine first.
+>
+> **Scan before you run.** Check every download with [VirusTotal](https://www.virustotal.com) before
+> you open it, and stay safe. Windows may also show a SmartScreen warning, because the installer is
+> not signed.
+
 ## What it looks like
 
 ![The launcher's main window: six app tiles, each with a version dropdown and a button. HopCast has an update waiting, so its button reads Update with Launch anyway beside it.](docs/images/launcher-main.png)
@@ -42,7 +54,7 @@ All of them are free to use. The launcher itself collects no data and needs no a
 
 - Install anything from gamehopper at your own risk. If you are unsure, try it in a virtual machine first.
 - If you have a problem, post it in the repository of the app that is giving you trouble.
-- The developer uses Linux and tests the Linux and Android versions. Windows versions are untested and may have bugs. Windows users are wanted, and your reports help.
+- The developer uses Linux and has tested only the Linux versions so far. Windows and Android versions are untested and may have bugs. Windows users are wanted, and your reports help.
 - The apps are free. If you enjoy them, a tip of any amount is appreciated (Cash App `$Normand64`), but there is no shame in freeloading.
 
 ## How it works
