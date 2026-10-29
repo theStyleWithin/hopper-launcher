@@ -1,0 +1,14 @@
+[package]
+name = "tauri-plugin-hopper-android"
+version = "0.1.0"
+description = "Install, launch and look up apps on Android for Hopper Launcher"
+edition = "2021"
+links = "tauri-plugin-hopper-android"
+
+[dependencies]
+tauri = { version = "2" }
+serde = "1"
+serde_json = "1"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

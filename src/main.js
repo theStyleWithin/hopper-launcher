@@ -142,7 +142,9 @@ async function launch(app) {
 }
 
 async function uninstall(app) {
-  const warn = app.adopted
+  const warn = device.os === "android"
+    ? `Remove ${app.name}? Android will ask you to confirm.`
+    : app.adopted
     ? `Stop using your copy of ${app.name} in the launcher? Your file is not deleted.`
     : app.folder
       ? `Uninstall ${app.name}? This deletes its program folder, including any settings stored inside it.`
@@ -247,21 +249,22 @@ function renderSettings() {
   if (!settings) return;
   const sheet = el("div", { className: "sheet" });
   sheet.append(el("h2", { id: "settings-title", textContent: welcome ? "Do you already have some of these apps?" : "Settings" }));
-  sheet.append(el("p", { textContent: "If you installed any of these apps before using the launcher, choose how it should treat them. Your files are never moved or deleted." }));
-
-  sheet.append(el("h3", { textContent: "Apps you already have" }));
-  MODES.forEach(([value, title, desc]) => {
+  const phone = device.os === "android";
+  if (!phone) sheet.append(el("p", { textContent: "If you installed any of these apps before using the launcher, choose how it should treat them. Your files are never moved or deleted." }));
+  if (phone) sheet.append(el("p", { textContent: "On Android, apps you install here are managed by Android itself, so there is nothing to set up." }));
+  if (!phone) sheet.append(el("h3", { textContent: "Apps you already have" }));
+  if (!phone) MODES.forEach(([value, title, desc]) => {
     const radio = el("input", { type: "radio", name: "mode", value, checked: settings.existing_mode === value });
     radio.onchange = () => setMode(value, settings.search_folders);
     sheet.append(el("label", { className: "choice" }, radio, el("b", { textContent: title }), el("span", { textContent: desc })));
   });
-  if (settings.existing_mode === "in_place") {
+  if (!phone && settings.existing_mode === "in_place") {
     const box = el("input", { type: "checkbox", checked: settings.search_folders });
     box.onchange = () => setMode("in_place", box.checked);
     sheet.append(el("label", { className: "sub" }, box, document.createTextNode("Also search the usual folders for them")));
   }
 
-  if (settings.scanning) {
+  if (!phone && settings.scanning) {
     sheet.append(el("h3", { textContent: "Found on this computer" }));
     const rows = el("div", { className: "rows" });
     if (found === null) rows.append(el("div", {}, el("span", { className: "empty", textContent: "Searching…" })));
@@ -292,9 +295,11 @@ function renderSettings() {
     acts.append(button("Report issue", "ghost", () => invoke("open_issues", { id: a.id }).catch((e) => say(String(e), true))));
     if (a.adopted) acts.append(button("Forget", "ghost", () => uninstall(a)));
     const own = a.installed && !a.adopted;
-    const use = button(a.adopted ? "Change…" : "Use an existing install…", "ghost", () => choose(a), own);
-    if (own) use.title = "Uninstall the launcher's copy first";
-    acts.append(use);
+    if (!phone) {
+      const use = button(a.adopted ? "Change…" : "Use an existing install…", "ghost", () => choose(a), own);
+      if (own) use.title = "Uninstall the launcher's copy first";
+      acts.append(use);
+    }
     list.append(el("div", {}, el("div", { className: "main" }, el("b", { textContent: a.name }), el("small", { textContent: a.adopted ? a.path : state })), acts));
   });
   sheet.append(list);
@@ -367,13 +372,17 @@ if (/^#[0-9a-f]{6}$/i.test(savedAccent || "")) setAccent(savedAccent, false);
 else syncPicker();
 checkContrast();
 
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && device?.os === "android") loadApps().catch(() => {});
+});
+
 (async () => {
   try {
     device = await invoke("get_device");
     renderDevice();
     settings = await invoke("get_settings");
     await loadApps();
-    if (settings.first_run) openSettings(true);
+    if (settings.first_run && device.os !== "android") openSettings(true);
     await refresh();
   } catch (e) {
     say(String(e), true);
