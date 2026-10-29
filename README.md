@@ -65,7 +65,8 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ### [**Download the latest release**](../../releases/latest)
 
-That link always opens the newest release, so it stays current when new versions come out. Older
+The current version is **0.3.0** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.3.0)).
+The big link above always opens the newest release, so it stays current when new versions come out. Older
 versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
 the file for your system:
 
@@ -115,10 +116,15 @@ page says which systems it supports, and the launcher only shows the builds that
   checked against the archive's checksums (and the developer's `SHA256SUMS` when one is there). The launcher
   only contacts archive.org while this is switched on, and it never switches to it by itself.
 - Launched apps run on their own, so closing the launcher never closes them.
-- **Your own background.** In Settings, "Choose an image…" lets you use your own PNG, JPEG or WebP picture
-  (under 12 MB) behind the apps. A copy is kept inside the launcher, so it keeps working if the original is
-  moved or deleted, and nothing is sent anywhere. The tiles stay solid so text stays readable; Dim and Blur
-  sliders and a Remove button put you in control. PNG, JPEG, WebP and GIF (no SVG). Animated GIFs only move while the launcher is idle and in front, and rest on their first frame whenever you use the mouse or keyboard, so launching apps never competes with the animation. Desktop for now.
+- **Your own background.** In Settings, "Choose an image…" lets you use your own PNG, JPEG, WebP or GIF
+  picture (under 12 MB, no SVG) behind the apps. A copy is kept inside the launcher, so it keeps working if
+  the original is moved or deleted, and nothing is sent anywhere. The tiles stay solid so text stays
+  readable; Dim and Blur sliders and a Remove button put you in control. Animated GIFs only move while the
+  launcher is idle and in front, and rest on their first frame whenever you use the mouse or keyboard (or
+  when Blur is on), so launching apps never competes with the animation. There is an "Animate the GIF"
+  switch to turn it off. Desktop for now.
+- **Look.** Settings → Look switches between the classic look (the default) and clear glass-bubble icons
+  beside each app's name.
 - **Download counts.** A small green number on each tile shows how many times that app has been downloaded,
   added up across every version and every system (Linux, Windows and Android all count toward one total). It
   uses GitHub's own public download numbers, so nothing is sent and nobody is identified. Checksum, debug and
@@ -173,7 +179,7 @@ cargo build --release
 - **Android:** a debug APK can be built with the manual "Android test build" workflow. It builds and
   contains the install and launch plugin, but it has never been run on a phone and is not released.
 
-**Releases.** Pushing a version tag such as `v0.1.3` runs the Release workflow. It runs the tests, builds
+**Releases.** Pushing a version tag such as `v0.3.0` runs the Release workflow. It runs the tests, builds
 the Linux AppImage and the Windows installer and zip, writes the checksum files, and attaches everything
 to the release. See `ROADMAP.md` and `DESIGN.md` for the plans and the reasoning behind the design.
 
