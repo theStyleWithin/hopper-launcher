@@ -70,6 +70,28 @@ away. (An optional "close the launcher after launching" setting is a possible
 later addition.) Updates appear on the tile when a newer release exists, and
 install files live in the launcher's own folder (see the install notes in `ROADMAP.md`).
 
+## New releases and updates
+The launcher finds out about new releases by asking GitHub itself. It does not
+phone home to a server of ours, so nothing identifies the user and no server has
+to be kept running. It checks when it opens, when "Check for updates" is pressed,
+and every 3 hours while it stays open. It asks GitHub "only if changed" (an ETag
+request), which costs GitHub almost nothing and does not use up the rate limit
+when nothing is new. A failed check keeps the last good answer on screen.
+
+When a newer release exists than the installed one:
+- The main button changes from **Launch** to **Update**, with **Launch anyway**
+  beside it. Launch anyway runs the installed version and changes nothing.
+- The dropdown offers **Skip this version (stop asking)**. The skip is remembered
+  for that exact release, so a newer release brings the prompt back. A skipped
+  app shows **Launch** again, and its dropdown can still say "Update to ...".
+- Installing an update clears any skip.
+
+## Order of the apps
+Apps start in alphabetical order and never move on their own. A handle on each
+tile lets the user drag it elsewhere (mouse or finger), or press the arrow keys
+while the handle has focus. The order is saved, and Settings has a button to go
+back to alphabetical. Apps added later appear after the user's own order.
+
 ## Apps you already have
 For people who installed an app before the launcher, Settings has one exclusive
 choice, **Apps you already have**:

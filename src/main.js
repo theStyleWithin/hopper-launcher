@@ -49,9 +49,21 @@ function renderSummary() {
 
 // ---------- tiles ----------
 
+/** A newer release exists than the one installed. */
 function updateAvailable(app) {
   const latest = releases[app.id]?.tag;
   return !!(app.installed && latest && app.version && norm(latest) !== norm(app.version));
+}
+
+/** The user chose to skip exactly this release. A newer one brings the prompt back. */
+function updateSkipped(app) {
+  const latest = releases[app.id]?.tag;
+  return !!(latest && app.ignored_version && norm(app.ignored_version) === norm(latest));
+}
+
+/** Show the Update prompt: newer release, and not skipped. */
+function updatePrompt(app) {
+  return updateAvailable(app) && !updateSkipped(app);
 }
 
 function tile(app) {
@@ -60,14 +72,18 @@ function tile(app) {
   const os = OS_NAME[device.os] || device.os;
   const builds = rel?.builds || [];
   const latest = rel?.tag;
-  const hasUpdate = updateAvailable(app);
+  const prompt = updatePrompt(app);
+  const skipped = updateAvailable(app) && updateSkipped(app);
   const inPlace = settings?.existing_mode === "in_place";
   const untested = (app.untested_on || []).includes(device.os) ? " · untested" : "";
 
   const t = el("section", { className: "tile" });
+  t.dataset.id = app.id;
   if (app.accent) t.style.setProperty("--a", app.accent);
 
-  const top = el("div", { className: "top" }, el("div", {}, el("h2", { textContent: app.name }), el("div", { className: "tag", textContent: app.tagline })));
+  const grip = el("button", { className: "grip", type: "button", title: "Drag to move, or use the arrow keys" });
+  grip.setAttribute("aria-label", `Move ${app.name}. Drag it, or press the arrow keys.`);
+  const top = el("div", { className: "top" }, grip, el("div", { className: "titles" }, el("h2", { textContent: app.name }), el("div", { className: "tag", textContent: app.tagline, title: app.tagline })));
   if (app.installed) top.append(button(app.adopted ? "Forget" : "Uninstall", "x", () => uninstall(app), working));
 
   const sel = el("select");
@@ -77,12 +93,34 @@ function tile(app) {
   if (app.installed) {
     const mine = app.adopted ? "Your copy" : "Installed";
     const ver = app.version ? ` · ${app.version}` : "";
-    sel.add(new Option(hasUpdate ? `Update available · ${latest}` : mine + ver));
-    sel.disabled = true;
-    btns.append(button("Launch", "go", () => launch(app), working));
-    if (hasUpdate) {
-      if (app.adopted && inPlace) btns.append(button("Releases", "go alt", () => invoke("open_repo", { id: app.id }).catch((e) => say(String(e), true))));
-      else if (builds.length) btns.append(button(working ? "Updating…" : "Update", "go alt", () => update(app, builds[0].file), working));
+    const getUpdate = () => (app.adopted && inPlace
+      ? invoke("open_repo", { id: app.id }).catch((e) => say(String(e), true))
+      : update(app, builds[0].file));
+    const canUpdate = !!builds.length || (app.adopted && inPlace);
+    if (prompt && canUpdate) {
+      // A new release: the main button becomes Update, running what is installed stays one click away.
+      sel.add(new Option(`Update available · ${latest}`, "update"));
+      sel.add(new Option(`Skip ${latest} (stop asking)`, "skip"));
+      sel.onchange = async () => {
+        if (sel.value !== "skip") return;
+        try { await invoke("skip_update", { id: app.id, tag: latest }); say(`Skipped ${latest}. You will be asked again when a newer release appears.`); }
+        catch (e) { say(String(e), true); }
+        await loadApps();
+      };
+      sel.disabled = working;
+      btns.append(button(working ? "Updating…" : app.adopted && inPlace ? "Get update" : "Update", "go", getUpdate, working));
+      btns.append(button("Launch anyway", "go alt", () => launch(app), working));
+    } else if (skipped && canUpdate) {
+      // The user already said no to this release: Launch stays the main button, and they can change their mind.
+      sel.add(new Option(`${mine}${ver} (skipped ${latest})`, "keep"));
+      sel.add(new Option(`Update to ${latest}`, "update"));
+      sel.onchange = () => { if (sel.value === "update") getUpdate(); };
+      sel.disabled = working;
+      btns.append(button("Launch", "go", () => launch(app), working));
+    } else {
+      sel.add(new Option(prompt ? `Update available · ${latest}` : mine + ver));
+      sel.disabled = true;
+      btns.append(button("Launch", "go", () => launch(app), working));
     }
   } else if (builds.length) {
     builds.forEach((b, i) => sel.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind] + untested, b.file)));
@@ -100,6 +138,7 @@ function tile(app) {
 }
 
 function render() {
+  if (dragging) return; // never rebuild the tiles under the user's pointer
   $("grid").replaceChildren(...apps.map(tile));
   renderSummary();
 }
@@ -160,14 +199,18 @@ async function uninstall(app) {
   renderSettings();
 }
 
+const CHECK_EVERY = 3 * 60 * 60 * 1000; // look for new releases every 3 hours while the launcher is open
+let lastCheck = Date.now();
+
 async function refresh() {
+  lastCheck = Date.now();
   $("refresh").disabled = true;
   releases = {};
   render();
   say("Checking GitHub…");
   try {
     (await invoke("check_releases")).forEach((r) => (releases[r.id] = r));
-    const updates = apps.filter(updateAvailable).length;
+    const updates = apps.filter(updatePrompt).length;
     const failed = Object.values(releases).filter((r) => r.error && r.error !== "No release published yet").length;
     say(failed ? "Some apps could not be checked. Are you online?" : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date", !!failed);
   } catch (e) {
@@ -175,6 +218,90 @@ async function refresh() {
   } finally {
     $("refresh").disabled = false;
     render();
+  }
+}
+
+// ---------- reordering ----------
+
+let dragging = null;
+
+async function saveOrder() {
+  try {
+    await invoke("set_app_order", { order: apps.map((a) => a.id) });
+    settings = await invoke("get_settings");
+  } catch (e) {
+    say(String(e), true);
+  }
+}
+
+/** Moves one app a place earlier (-1) or later (+1), for keyboard users. */
+function moveApp(id, delta) {
+  const i = apps.findIndex((a) => a.id === id);
+  const j = i + delta;
+  if (i < 0 || j < 0 || j >= apps.length) return;
+  [apps[i], apps[j]] = [apps[j], apps[i]];
+  render();
+  $("grid").querySelector(`[data-id="${id}"] .grip`)?.focus();
+  saveOrder();
+}
+
+$("grid").addEventListener("keydown", (e) => {
+  const grip = e.target.closest?.(".grip");
+  if (!grip) return;
+  const id = grip.closest(".tile").dataset.id;
+  if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); moveApp(id, -1); }
+  else if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); moveApp(id, 1); }
+});
+
+// Pointer events work the same for a mouse and for a finger on a phone.
+$("grid").addEventListener("pointerdown", (e) => {
+  const grip = e.target.closest(".grip");
+  if (!grip || e.button > 0) return;
+  e.preventDefault();
+  const tile = grip.closest(".tile");
+  const grid = $("grid");
+  dragging = tile;
+  tile.classList.add("dragging");
+
+  const move = (ev) => {
+    const edge = 48; // scroll the page when dragging near its top or bottom edge
+    if (ev.clientY < edge) window.scrollBy(0, -16);
+    else if (ev.clientY > innerHeight - edge) window.scrollBy(0, 16);
+    const over = document.elementsFromPoint(ev.clientX, ev.clientY).find((n) => n.classList?.contains("tile") && n !== tile);
+    if (!over) return;
+    const kids = [...grid.children];
+    if (kids.indexOf(tile) < kids.indexOf(over)) over.after(tile);
+    else over.before(tile);
+  };
+  const end = () => {
+    document.removeEventListener("pointermove", move);
+    document.removeEventListener("pointerup", end);
+    document.removeEventListener("pointercancel", end);
+    tile.classList.remove("dragging");
+    dragging = null;
+    const ids = [...grid.children].map((t) => t.dataset.id);
+    apps.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+    saveOrder();
+  };
+  document.addEventListener("pointermove", move);
+  document.addEventListener("pointerup", end);
+  document.addEventListener("pointercancel", end);
+});
+
+/** Looks for new releases without clearing the screen, and says so when one appears. */
+async function quietCheck() {
+  if (!device || busy.size || Date.now() - lastCheck < CHECK_EVERY) return;
+  lastCheck = Date.now();
+  const before = Object.fromEntries(Object.entries(releases).map(([id, r]) => [id, r.tag]));
+  try {
+    (await invoke("check_releases")).forEach((r) => {
+      if (!r.error || !releases[r.id]?.tag) releases[r.id] = r; // a failed check keeps the last good answer
+    });
+    const fresh = apps.filter((a) => before[a.id] && releases[a.id]?.tag !== before[a.id] && updatePrompt(a));
+    if (fresh.length) say(`New release: ${fresh.map((a) => `${a.name} ${releases[a.id].tag}`).join(", ")}`);
+    render();
+  } catch (e) {
+    /* offline: try again at the next tick */
   }
 }
 
@@ -288,6 +415,16 @@ function renderSettings() {
   }
 
   sheet.append(el("h3", { textContent: "Your apps" }));
+  if (settings.custom_order) {
+    sheet.append(button("Reset the order to alphabetical", "ghost", async () => {
+      try {
+        await invoke("reset_app_order");
+        settings = await invoke("get_settings");
+        await loadApps();
+      } catch (e) { say(String(e), true); }
+      renderSettings();
+    }));
+  }
   const list = el("div", { className: "rows" });
   apps.forEach((a) => {
     const state = !a.installed ? "Not set up" : a.adopted ? "Your copy" : "Installed by the launcher";
@@ -373,8 +510,11 @@ else syncPicker();
 checkContrast();
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && device?.os === "android") loadApps().catch(() => {});
+  if (document.hidden) return;
+  if (device?.os === "android") loadApps().catch(() => {});
+  quietCheck(); // a laptop that slept may have missed a few hours
 });
+setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but only asks GitHub every 3 hours
 
 (async () => {
   try {

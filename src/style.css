@@ -130,3 +130,20 @@ label.sub { font-size: 14px; color: var(--dim); }
 @media (max-width: 720px) { .notice .items { grid-template-columns: minmax(0, 1fr); } }
 
 .device { height: auto; min-height: 72px; flex-wrap: wrap; gap: 8px 24px; }
+
+/* Two buttons side by side: keep labels on one line and give the longer one more room. */
+.btns .go { white-space: nowrap; padding: 0 12px; }
+.btns .alt { flex: 1.5; }
+
+/* Reordering */
+.top > .titles { min-width: 0; flex: 1; }
+.grip {
+  flex: none; width: 24px; height: 40px; padding: 0; margin: -4px 0 0 -8px;
+  border: 0; border-radius: 4px; cursor: grab; touch-action: none;
+  background-color: var(--dim);
+  -webkit-mask: radial-gradient(circle, #000 1.6px, transparent 2px) center / 8px 8px repeat-y; mask: radial-gradient(circle, #000 1.6px, transparent 2px) center / 8px 8px repeat-y;
+}
+.grip:hover, .grip:focus-visible { background-color: var(--accent); outline: none; }
+.grip:active { cursor: grabbing; }
+.tile.dragging { border-color: var(--accent); outline: 1px solid var(--accent); }
+.sheet > button.ghost { margin-bottom: 16px; }

@@ -40,6 +40,9 @@ All of them are free to use. The launcher itself collects no data and needs no a
 - Already have some of the apps? Settings, "Apps you already have", lets you
   choose: auto-detect, choose myself, or keep in place. Your own files are never
   moved or deleted.
+- It checks GitHub for new releases when it opens and every 3 hours while open. When one
+  appears, the button becomes Update, with Launch anyway beside it and a choice to skip that version.
+- Drag the handle on a tile (or use the arrow keys) to put the apps in your own order.
 - Themes: Cyberpunk, Midnight and Paper, plus an accent colour picker.
 - To use your own list, place an `apps.json` in `~/.config/hopper-launcher/`.
 

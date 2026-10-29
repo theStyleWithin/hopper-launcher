@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg_attr(target_os = "android", allow(unused_imports))]
 use std::process::{Command, Stdio};
 
 const BUNDLED_MANIFEST: &str = include_str!("../../apps.json");
@@ -46,6 +47,9 @@ struct InstalledApp {
     /// Android only: the installed app's package name, read from its APK.
     #[serde(default)]
     package: Option<String>,
+    /// A release the user chose to skip. The update prompt stays away until a newer one appears.
+    #[serde(default)]
+    ignored_version: Option<String>,
 }
 
 type State = HashMap<String, InstalledApp>;
@@ -61,6 +65,8 @@ struct AppInfo {
     /// The user's own copy, used in place.
     adopted: bool,
     path: Option<String>,
+    /// The release the user skipped, if any.
+    ignored_version: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -80,7 +86,7 @@ struct InstallResult {
     handed_off: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Release {
     tag_name: String,
     assets: Vec<Asset>,
@@ -170,19 +176,37 @@ fn save_state(state: &State) -> Result<(), String> {
 
 // ---------- GitHub ----------
 
+/// The last answer GitHub gave for each repo, with its ETag. Asking again with
+/// "only if changed" costs GitHub almost nothing and does not use up the rate limit.
+static RELEASE_CACHE: std::sync::Mutex<Option<HashMap<String, (String, Release)>>> = std::sync::Mutex::new(None);
+
+fn cached_release(repo: &str) -> Option<(String, Release)> {
+    RELEASE_CACHE.lock().ok()?.as_ref()?.get(repo).cloned()
+}
+
 fn latest_release(repo: &str) -> Result<Release, String> {
     let url = format!("{}/repos/{repo}/releases/latest", api_base());
-    ureq::get(&url)
+    let cached = cached_release(repo);
+    let mut req = ureq::get(&url)
         .set("User-Agent", "hopper-launcher")
-        .set("Accept", "application/vnd.github+json")
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(404, _) => "No release published yet".to_string(),
-            ureq::Error::Status(403 | 429, _) => "GitHub rate limit reached, try again later".to_string(),
-            other => format!("Could not reach GitHub: {other}"),
-        })?
-        .into_json::<Release>()
-        .map_err(|e| e.to_string())
+        .set("Accept", "application/vnd.github+json");
+    if let Some((etag, _)) = &cached {
+        req = req.set("If-None-Match", etag);
+    }
+    let resp = req.call().map_err(|e| match e {
+        ureq::Error::Status(404, _) => "No release published yet".to_string(),
+        ureq::Error::Status(403 | 429, _) => "GitHub rate limit reached, try again later".to_string(),
+        other => format!("Could not reach GitHub: {other}"),
+    })?;
+    if resp.status() == 304 {
+        return cached.map(|(_, r)| r).ok_or_else(|| "GitHub said nothing changed, but there is nothing saved".to_string());
+    }
+    let etag = resp.header("etag").map(str::to_string);
+    let release: Release = resp.into_json().map_err(|e| e.to_string())?;
+    if let (Some(etag), Ok(mut cache)) = (etag, RELEASE_CACHE.lock()) {
+        cache.get_or_insert_with(HashMap::new).insert(repo.to_string(), (etag, release.clone()));
+    }
+    Ok(release)
 }
 
 /// Writes through to a file while hashing everything that passes.
@@ -406,7 +430,7 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
             .ok_or("Could not read the app's package name")?;
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg) },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: None },
         );
         save_state(&state)?;
         android_call("installApk", serde_json::json!({ "path": path_text }))?;
@@ -420,7 +444,7 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
     } else {
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: None },
         );
         save_state(&state)?;
     }
@@ -453,11 +477,14 @@ struct Settings {
     extra_folders: Vec<PathBuf>,
     #[serde(default)]
     first_run_done: bool,
+    /// The order the user dragged the apps into. Empty means alphabetical.
+    #[serde(default)]
+    app_order: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![] }
     }
 }
 
@@ -634,6 +661,7 @@ fn adopt_entry(app: &AppEntry, path: &Path) -> Result<(), String> {
             folder: false,
             adopted: true,
             package: None,
+            ignored_version: None,
         },
     );
     save_state(&state)
@@ -657,13 +685,32 @@ fn list_apps_from(entries: Vec<AppEntry>) -> Vec<AppInfo> {
                 version: managed.map(|s| s.tag.clone()),
                 folder: managed.map_or(false, |s| s.folder),
                 adopted: managed.map_or(false, |s| s.adopted),
+                ignored_version: managed.and_then(|s| s.ignored_version.clone()),
                 path: managed.map(|s| s.path.to_string_lossy().into_owned()),
                 entry,
             }
         })
         .collect();
     apps.sort_by_key(|a| a.entry.name.to_lowercase());
+    apply_order(&mut apps, &load_settings().app_order);
     apps
+}
+
+/// Puts the apps in the user's own order. Apps not in that list (for example a newly
+/// added one) follow, still in alphabetical order, because the sort is stable.
+fn apply_order(apps: &mut [AppInfo], order: &[String]) {
+    apps.sort_by_key(|a| order.iter().position(|id| *id == a.entry.id).unwrap_or(usize::MAX));
+}
+
+/// Keeps only apps that exist, each once, in the order given.
+fn clean_order(ids: Vec<String>, known: &[AppEntry]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        if known.iter().any(|a| a.id == id) && !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    out
 }
 
 #[tauri::command]
@@ -758,6 +805,19 @@ fn launch_file(app: &AppEntry) -> Result<(), String> {
     Ok(())
 }
 
+/// Remembers that the user does not want to be asked about this release.
+fn skip_entry(app: &AppEntry, tag: &str) -> Result<(), String> {
+    let mut state = load_state();
+    let entry = state.get_mut(&app.id).ok_or_else(|| format!("{} is not installed", app.name))?;
+    entry.ignored_version = Some(tag.to_string());
+    save_state(&state)
+}
+
+#[tauri::command]
+fn skip_update(id: String, tag: String) -> Result<(), String> {
+    skip_entry(&find_app(&id)?, &tag)
+}
+
 #[tauri::command]
 fn launch_app(id: String) -> Result<(), String> {
     launch_entry(&find_app(&id)?)
@@ -766,6 +826,7 @@ fn launch_app(id: String) -> Result<(), String> {
 /// Removes the program. A single-file install leaves any settings folders the app
 /// made next to it (the folder is removed only if nothing else is left in it).
 /// A portable folder install is removed whole, so the UI warns about that first.
+#[cfg_attr(target_os = "android", allow(unreachable_code))]
 fn uninstall_entry(app: &AppEntry) -> Result<(), String> {
     #[cfg(target_os = "android")]
     {
@@ -809,6 +870,8 @@ struct FolderInfo {
 struct SettingsView {
     /// True until the first-run existing-install check has been shown once.
     first_run: bool,
+    /// True when the user has dragged the apps into their own order.
+    custom_order: bool,
     existing_mode: String,
     search_folders: bool,
     /// Whether the launcher will search folders at all under the current choice.
@@ -830,6 +893,7 @@ fn settings_view() -> SettingsView {
     );
     SettingsView {
         first_run: !settings.first_run_done,
+        custom_order: !settings.app_order.is_empty(),
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -852,6 +916,21 @@ fn set_existing_mode(mode: String, search_folders: bool) -> Result<SettingsView,
     settings.search_folders = search_folders;
     save_settings(&settings)?;
     Ok(settings_view())
+}
+
+#[tauri::command]
+fn set_app_order(order: Vec<String>) -> Result<(), String> {
+    let known = load_manifest()?;
+    let mut settings = load_settings();
+    settings.app_order = clean_order(order, &known);
+    save_settings(&settings)
+}
+
+#[tauri::command]
+fn reset_app_order() -> Result<(), String> {
+    let mut settings = load_settings();
+    settings.app_order.clear();
+    save_settings(&settings)
 }
 
 #[tauri::command]
@@ -936,6 +1015,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_existing_mode,
+            set_app_order,
+            reset_app_order,
             finish_first_run,
             add_scan_folder,
             remove_scan_folder,
@@ -948,6 +1029,7 @@ pub fn run() {
             install_app,
             launch_app,
             uninstall_app,
+            skip_update,
             open_repo
         ])
         .run(tauri::generate_context!())
@@ -964,6 +1046,9 @@ mod tests {
 
     type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
+    /// How many full (not "unchanged") release answers the fake server has sent.
+    static FULL_RELEASE_ANSWERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     /// Tests that set process-wide environment variables take turns.
     static ENV: Mutex<()> = Mutex::new(());
 
@@ -979,6 +1064,32 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
         }
         let _ = mode;
+    }
+
+    #[test]
+    fn user_order_is_applied_and_cleaned() {
+        let mk = |id: &str| AppInfo {
+            entry: entry(id, id),
+            installed: false,
+            version: None,
+            folder: false,
+            adopted: false,
+            path: None,
+            ignored_version: None,
+        };
+        let ids = |apps: &[AppInfo]| apps.iter().map(|a| a.entry.id.clone()).collect::<Vec<_>>();
+        let mut apps = vec![mk("a"), mk("b"), mk("c"), mk("d")]; // already alphabetical
+        // The user dragged c first, then a. b and d were never placed, so they follow alphabetically.
+        apply_order(&mut apps, &["c".to_string(), "a".to_string()]);
+        assert_eq!(ids(&apps), ["c", "a", "b", "d"]);
+        // No custom order leaves alphabetical order alone.
+        let mut apps = vec![mk("a"), mk("b"), mk("c")];
+        apply_order(&mut apps, &[]);
+        assert_eq!(ids(&apps), ["a", "b", "c"]);
+        // Unknown and repeated ids from the page are dropped.
+        let known = vec![entry("a", "a"), entry("b", "b")];
+        let cleaned = clean_order(vec!["b".into(), "zzz".into(), "a".into(), "b".into()], &known);
+        assert_eq!(cleaned, ["b", "a"]);
     }
 
     #[test]
@@ -1078,7 +1189,7 @@ mod tests {
         fs::create_dir_all(managed.parent().unwrap()).unwrap();
         script(&managed, "#!/bin/sh\n", 0o755);
         let mut st = load_state();
-        st.insert("hopcast".into(), InstalledApp { tag: "v0.1.15".into(), path: managed, folder: false, adopted: false, package: None });
+        st.insert("hopcast".into(), InstalledApp { tag: "v0.1.15".into(), path: managed, folder: false, adopted: false, package: None, ignored_version: None });
         save_state(&st).unwrap();
         assert!(adopt_entry(&app, &theirs).unwrap_err().contains("already installed"));
 
@@ -1143,17 +1254,29 @@ mod tests {
                     let mut line = String::new();
                     reader.read_line(&mut line).unwrap();
                     let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    let mut if_none_match = None;
                     loop {
                         let mut h = String::new();
                         if reader.read_line(&mut h).unwrap_or(0) <= 2 {
                             break;
                         }
+                        if let Some(v) = h.to_lowercase().strip_prefix("if-none-match:") {
+                            if_none_match = Some(v.trim().to_string());
+                        }
                     }
                     let mut s = stream;
                     match routes.lock().unwrap().get(&path) {
                         Some(body) => {
-                            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
-                            let _ = s.write_all(body);
+                            let etag = format!("\"{}\"", &to_hex(&Sha256::digest(body))[..16]);
+                            if if_none_match.as_deref() == Some(etag.to_lowercase().as_str()) {
+                                let _ = write!(s, "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nConnection: close\r\n\r\n");
+                            } else {
+                                if path.ends_with("/releases/latest") {
+                                    FULL_RELEASE_ANSWERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                }
+                                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nETag: {etag}\r\nConnection: close\r\n\r\n", body.len());
+                                let _ = s.write_all(body);
+                            }
                         }
                         None => {
                             let _ = write!(s, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -1221,6 +1344,12 @@ mod tests {
         let offered: Vec<_> = builds_for(&rel.assets, "linux", "x86_64").into_iter().map(|b| b.file).collect();
         assert_eq!(offered, vec!["App-x86_64.AppImage"]);
 
+        // Asking again when nothing changed is answered "unchanged" (cheap), and a new release gets a full answer.
+        let answers = || FULL_RELEASE_ANSWERS.load(std::sync::atomic::Ordering::SeqCst);
+        let before = answers();
+        assert_eq!(latest_release("me/app").unwrap().tag_name, "v1");
+        assert_eq!(answers(), before, "an unchanged release was downloaded again");
+
         // Installing a file that is not a build for this device is refused.
         assert!(install_blocking(&app, "App-debug-x86_64.AppImage").is_err());
         assert_eq!(status(), (false, None));
@@ -1245,8 +1374,15 @@ mod tests {
         }
         assert!(mark.exists(), "the launched app never ran");
 
+        // Skipping a release is remembered.
+        skip_entry(&app, "v2").unwrap();
+        assert_eq!(list_apps_from(vec![app.clone()])[0].ignored_version.as_deref(), Some("v2"));
+
         // A tampered update is rejected and the working install is left alone.
         publish(port, &routes, "v2", b"#!/bin/sh\necho evil\n", &sha(v1));
+        let before = answers();
+        assert_eq!(latest_release("me/app").unwrap().tag_name, "v2");
+        assert_eq!(answers(), before + 1, "a changed release was not downloaded");
         let err = install_blocking(&app, "App-x86_64.AppImage").unwrap_err();
         assert!(err.contains("checksum"), "{err}");
         assert_eq!(status(), (true, Some("v1".into())));
@@ -1256,6 +1392,7 @@ mod tests {
         publish(port, &routes, "v2", v2, &sha(v2));
         assert_eq!(install_blocking(&app, "App-x86_64.AppImage").unwrap().tag, "v2");
         assert_eq!(status(), (true, Some("v2".into())));
+        assert_eq!(list_apps_from(vec![app.clone()])[0].ignored_version, None, "installing should clear a skipped version");
         let left: Vec<_> = fs::read_dir(data.join("apps/app")).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 2, "expected the new program and the settings folder, got {left:?}");
         assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "an update touched the app's settings");
