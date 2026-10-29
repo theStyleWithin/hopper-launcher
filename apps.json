@@ -1,20 +1,38 @@
 {
+  "schema": 2,
   "apps": [
-    {
-      "id": "hopcast",
-      "name": "HopCast",
-      "tagline": "Bloat-free, easy livestreaming",
-      "repo": "gamehopper/hoppercast",
-      "accent": "#7a5cff",
-      "asset": ".AppImage"
-    },
     {
       "id": "alias-maker",
       "name": "Alias Maker",
       "tagline": "Mario Maker for terminal commands",
       "repo": "gamehopper/Alias-maker",
       "accent": "#2ee6a6",
-      "asset": ".AppImage"
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+      ]
+    },
+    {
+      "id": "anti-social",
+      "name": "Anti-Social",
+      "tagline": "Social media where nobody sees your posts",
+      "repo": "gamehopper/anti-social",
+      "accent": "#ff3ea5",
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
+        { "os": "windows", "arch": "x86_64", "kind": "installer", "asset": "Anti-Social-Setup" },
+        { "os": "windows", "arch": "x86_64", "kind": "portable", "asset": "-portable.exe" },
+        { "os": "android", "arch": "any", "kind": "apk", "asset": ".apk" }
+      ]
+    },
+    {
+      "id": "hopcast",
+      "name": "HopCast",
+      "tagline": "Bloat-free, easy livestreaming",
+      "repo": "gamehopper/hopcast",
+      "accent": "#7a5cff",
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+      ]
     },
     {
       "id": "hop-tunes",
@@ -22,7 +40,34 @@
       "tagline": "Sleek, minimalist media player",
       "repo": "gamehopper/Hop-tunes",
       "accent": "#ff5ea8",
-      "asset": ".AppImage"
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+      ]
+    },
+    {
+      "id": "sudo-make-art",
+      "name": "sudo make art",
+      "tagline": "Offline, local-only design tool",
+      "repo": "gamehopper/sudo-make-art",
+      "accent": "#ffb02e",
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
+        { "os": "windows", "arch": "x86_64", "kind": "installer", "asset": ".exe", "untested": true },
+        { "os": "android", "arch": "any", "kind": "apk", "asset": ".apk", "untested": true }
+      ]
+    },
+    {
+      "id": "sudo-make-music",
+      "name": "sudo make music",
+      "tagline": "Offline AI music generation",
+      "repo": "gamehopper/sudo-make-music",
+      "accent": "#19e3ff",
+      "builds": [
+        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
+        { "os": "windows", "arch": "x86_64", "kind": "portable", "asset": "sudo-make-music-portable.exe", "untested": true },
+        { "os": "windows", "arch": "x86_64", "kind": "zip", "asset": "windows-folder.zip", "untested": true },
+        { "os": "android", "arch": "any", "kind": "apk", "asset": "android.apk", "untested": true }
+      ]
     }
   ]
 }

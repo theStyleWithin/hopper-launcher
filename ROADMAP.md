@@ -1,7 +1,7 @@
 # Hopper Launcher: project notes and roadmap
 
 ## Status
-On hold. The owner is finishing HopCast, Alias Maker and HopTunes first.
+Design phase started (see `DESIGN.md` and `design/mockup.html`). Previously on hold. The owner is finishing HopCast, Alias Maker and HopTunes first.
 The Tauri scaffold on this branch has never been compiled; start with a build check.
 
 ## Context
@@ -25,7 +25,7 @@ Work needed when this resumes:
    `.exe` files in the README.
 
 ## Other open items
-- HopCast repo is still named `hoppercast`; update its `repo` field in `apps.json` after the rename.
+- HopCast repo has been renamed to `hopcast`; `apps.json` already points at it.
 - Choose a license (README currently says none chosen, all rights reserved).
 - Optional: auto-discover apps from a repo topic like `gamehopper-app`.
 - Optional: GitHub Actions workflow so each app publishes an AppImage release.
