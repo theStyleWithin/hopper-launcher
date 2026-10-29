@@ -48,7 +48,7 @@ preselected and labelled "Recommended". Order: on Linux AppImage, then .deb,
 then .rpm; on Windows installer, MSI, portable, plain .exe, then zip.
 Zip builds are unpacked by the launcher into its own folder. If an app has no
 build for the device, the tile stays in place with a disabled dropdown reading
-"No <OS> build yet", so the grid never changes shape.
+"No <OS> build yet", so the grid never changes shape. Owner decision: such apps stay part of the lineup but nothing on the tile is clickable.
 
 ## Hardware detector
 Reads, locally and without sending anything anywhere: OS, CPU architecture,
@@ -83,8 +83,7 @@ theme file with the same tokens.
 - **Linux:** AppImages are downloaded and made executable, as in the scaffold.
 
 ## Open questions for the owner
-1. Should an app with no build for the device stay visible and greyed out (as in the mockup), or be hidden?
-2. On Android, should the launcher hand APKs to the system installer, or just open the download?
-3. Is the built-in theme list enough, or should users also get an accent-colour picker?
-4. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
+1. On Android, should the launcher hand APKs to the system installer, or just open the download?
+2. Is the built-in theme list enough, or should users also get an accent-colour picker?
+3. `sudo-make-art`'s README calls it "inspired by" a well-known design tool;
    consider rewording it, like the media player description.

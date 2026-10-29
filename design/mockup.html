@@ -56,7 +56,7 @@ select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); o
   height: 208px; padding: 24px; display: flex; flex-direction: column; justify-content: space-between;
   background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
 }
-.tile:hover { background: var(--panel-hi); }
+.tile:not(.off):hover { background: var(--panel-hi); }
 .tile h2 { font-size: 20px; line-height: 24px; font-weight: 600; }
 .tile .tag { color: var(--dim); font-size: 14px; line-height: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip { display: inline-block; font-size: 12px; line-height: 16px; padding: 4px 8px; border: 1px solid currentColor; border-radius: 2px; }
@@ -150,7 +150,7 @@ function render() {
       btn.textContent = "Install";
     } else {
       sel.add(new Option("No " + d.name.split(" ")[0] + " build yet"));
-      sel.disabled = true; btn.textContent = "Unavailable"; btn.disabled = true;
+      sel.disabled = true; btn.textContent = "Unavailable"; btn.disabled = true; t.classList.add("off");
     }
     return t;
   }));
