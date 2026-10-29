@@ -118,3 +118,15 @@ dialog::backdrop { background: rgba(0, 0, 0, .65); }
 dialog { margin: auto; }
 label.choice, label.sub { text-transform: none; letter-spacing: 0; font-size: 16px; line-height: 24px; color: var(--text); }
 label.sub { font-size: 14px; color: var(--dim); }
+
+/* Notice panel */
+.notice { margin-top: 24px; padding: 24px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 4px; }
+.notice h2 { font-size: 12px; line-height: 16px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 400; margin-bottom: 16px; }
+.notice .items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 32px; }
+.notice .items > div { display: flex; flex-direction: column; gap: 8px; }
+.notice b { display: block; font-weight: 600; font-size: 16px; line-height: 24px; }
+.notice p { color: var(--dim); font-size: 14px; line-height: 24px; }
+.notice code { color: var(--text); font-size: 14px; }
+@media (max-width: 720px) { .notice .items { grid-template-columns: minmax(0, 1fr); } }
+
+.device { height: auto; min-height: 72px; flex-wrap: wrap; gap: 8px 24px; }

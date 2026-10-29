@@ -18,6 +18,13 @@ you when an update is available.
 
 All of them are free to use. The launcher itself collects no data and needs no account.
 
+## Before you install
+
+- Install anything from gamehopper at your own risk. If you are unsure, try it in a virtual machine first.
+- If you have a problem, post it in the repository of the app that is giving you trouble.
+- The developer uses Linux and tests the Linux and Android versions. Windows versions are untested and may have bugs. Windows users are wanted, and your reports help.
+- The apps are free. If you enjoy them, a tip of any amount is appreciated (Cash App `$Normand64`), but there is no shame in freeloading.
+
 ## How it works
 
 - `apps.json` lists the apps (name, tagline and GitHub repo). It never scans an

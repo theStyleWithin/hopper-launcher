@@ -289,6 +289,7 @@ function renderSettings() {
   apps.forEach((a) => {
     const state = !a.installed ? "Not set up" : a.adopted ? "Your copy" : "Installed by the launcher";
     const acts = el("div", { className: "acts" });
+    acts.append(button("Report issue", "ghost", () => invoke("open_issues", { id: a.id }).catch((e) => say(String(e), true))));
     if (a.adopted) acts.append(button("Forget", "ghost", () => uninstall(a)));
     const own = a.installed && !a.adopted;
     const use = button(a.adopted ? "Change…" : "Use an existing install…", "ghost", () => choose(a), own);

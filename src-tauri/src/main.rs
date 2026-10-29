@@ -822,6 +822,13 @@ fn adopt_app(id: String, path: String) -> Result<(), String> {
     adopt_entry(&find_app(&id)?, Path::new(&path))
 }
 
+/// Each app's own issues page, for reporting problems with that app.
+#[tauri::command]
+fn open_issues(id: String) -> Result<(), String> {
+    let app = find_app(&id)?;
+    open_with_system(&format!("https://github.com/{}/issues", app.repo))
+}
+
 #[tauri::command]
 fn open_repo(id: String) -> Result<(), String> {
     let app = find_app(&id)?;
@@ -839,6 +846,7 @@ fn main() {
             remove_scan_folder,
             scan_existing,
             adopt_app,
+            open_issues,
             get_device,
             list_apps,
             check_releases,
