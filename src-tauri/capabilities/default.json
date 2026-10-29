@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default permissions for the launcher window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:default"]
 }

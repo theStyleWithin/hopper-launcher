@@ -41,6 +41,10 @@ struct InstalledApp {
     /// True when the app was unpacked into its own folder (portable zip builds).
     #[serde(default)]
     folder: bool,
+    /// True when this is the user's own copy, found or chosen in place. The
+    /// launcher runs it where it is and never moves, changes or deletes it.
+    #[serde(default)]
+    adopted: bool,
 }
 
 type State = HashMap<String, InstalledApp>;
@@ -53,6 +57,9 @@ struct AppInfo {
     version: Option<String>,
     /// Installed as a whole folder, which may hold the app's own settings.
     folder: bool,
+    /// The user's own copy, used in place.
+    adopted: bool,
+    path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -359,11 +366,212 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
     } else {
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip" },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false },
         );
         save_state(&state)?;
     }
     Ok(InstallResult { tag: release.tag_name, verified, handed_off })
+}
+
+// ---------- settings ----------
+
+fn default_mode() -> String {
+    "auto".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// How the launcher treats apps the user installed before the launcher existed.
+///   "auto"     search the usual folders and ask before using each find
+///   "manual"   never search; the user points at each app in Settings
+///   "in_place" use existing apps where they are and never download a copy of them
+#[derive(Deserialize, Serialize)]
+struct Settings {
+    #[serde(default = "default_mode")]
+    existing_mode: String,
+    /// Only used by "in_place": also search the usual folders.
+    #[serde(default = "default_true")]
+    search_folders: bool,
+    /// Extra folders the user wants searched for existing installs.
+    #[serde(default)]
+    extra_folders: Vec<PathBuf>,
+    #[serde(default)]
+    first_run_done: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false }
+    }
+}
+
+fn scanning_enabled(s: &Settings) -> bool {
+    match s.existing_mode.as_str() {
+        "auto" => true,
+        "in_place" => s.search_folders,
+        _ => false,
+    }
+}
+
+/// In "in_place" mode the launcher never replaces a copy the user brought with its own download.
+fn check_update_allowed(id: &str) -> Result<(), String> {
+    let adopted = load_state().get(id).map_or(false, |s| s.adopted);
+    if adopted && load_settings().existing_mode == "in_place" {
+        return Err("Your setting keeps this app where it is. Update it yourself, or change the setting.".into());
+    }
+    Ok(())
+}
+
+fn settings_path() -> PathBuf {
+    data_dir().join("settings.json")
+}
+
+fn load_settings() -> Settings {
+    fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_settings(settings: &Settings) -> Result<(), String> {
+    fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    fs::write(settings_path(), text).map_err(|e| e.to_string())
+}
+
+/// The usual places people keep downloaded apps.
+fn default_scan_folders() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        for sub in ["Applications", "AppImages", "bin", ".local/bin"] {
+            v.push(home.join(sub));
+        }
+    }
+    v.extend(dirs::download_dir());
+    v.extend(dirs::desktop_dir());
+    v.dedup();
+    v
+}
+
+// ---------- existing installs ----------
+
+#[derive(Serialize, Debug, PartialEq)]
+struct Candidate {
+    app_id: String,
+    app_name: String,
+    path: String,
+    version: Option<String>,
+}
+
+/// Lowercase letters and digits only, so "Hop-Tunes_1.0" and "hoptunes" compare equal.
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// The first dotted version number in a file name, like "0.1.14".
+fn version_from_name(name: &str) -> Option<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() && (i == 0 || !chars[i - 1].is_ascii_digit()) {
+            let mut j = i;
+            let mut dots = 0;
+            loop {
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j + 1 < chars.len() && chars[j] == '.' && chars[j + 1].is_ascii_digit() {
+                    dots += 1;
+                    j += 1;
+                } else {
+                    break;
+                }
+            }
+            if dots > 0 {
+                return Some(chars[i..j].iter().collect());
+            }
+            i = j.max(i + 1);
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+fn is_program_file(name: &str) -> bool {
+    let n = name.to_lowercase();
+    if n.contains("debug") {
+        return false;
+    }
+    if cfg!(windows) {
+        n.ends_with(".exe") && !["setup", "install", "unins"].iter().any(|w| n.contains(w))
+    } else {
+        n.ends_with(".appimage")
+    }
+}
+
+/// Looks one level deep in each folder for program files named after one of the apps.
+fn scan_folders(apps: &[AppEntry], folders: &[PathBuf], skip: &Path) -> Vec<Candidate> {
+    let mut out = Vec::new();
+    for folder in folders {
+        let Ok(rd) = fs::read_dir(folder) else { continue };
+        for e in rd.flatten() {
+            let path = e.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else { continue };
+            if !path.is_file() || path.starts_with(skip) || !is_program_file(&name) {
+                continue;
+            }
+            let stem = squash(&name);
+            for app in apps {
+                if stem.contains(&squash(&app.id)) || stem.contains(&squash(&app.name)) {
+                    out.push(Candidate {
+                        app_id: app.id.clone(),
+                        app_name: app.name.clone(),
+                        path: path.to_string_lossy().into_owned(),
+                        version: version_from_name(&name),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.app_name.to_lowercase().cmp(&b.app_name.to_lowercase()).then(a.path.cmp(&b.path)));
+    out.dedup_by(|a, b| a.path == b.path);
+    out
+}
+
+/// Starts using a copy the user already has, exactly where it is.
+fn adopt_entry(app: &AppEntry, path: &Path) -> Result<(), String> {
+    let mut state = load_state();
+    if let Some(existing) = state.get(&app.id) {
+        if !existing.adopted && existing.path.is_file() {
+            return Err(format!("{} is already installed by the launcher. Uninstall that copy first to use your own.", app.name));
+        }
+    }
+    let meta = fs::metadata(path).map_err(|e| format!("Could not read that file: {e}"))?;
+    if !meta.is_file() {
+        return Err("That is not a file.".into());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 == 0 {
+            return Err("That file is not marked as runnable. Allow it to run as a program in its Properties, then try again.".into());
+        }
+    }
+    let file = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    state.insert(
+        app.id.clone(),
+        InstalledApp {
+            tag: version_from_name(file).unwrap_or_default(),
+            path: path.to_path_buf(),
+            folder: false,
+            adopted: true,
+        },
+    );
+    save_state(&state)
 }
 
 // ---------- commands ----------
@@ -383,6 +591,8 @@ fn list_apps_from(entries: Vec<AppEntry>) -> Vec<AppInfo> {
                 installed: managed.is_some(),
                 version: managed.map(|s| s.tag.clone()),
                 folder: managed.map_or(false, |s| s.folder),
+                adopted: managed.map_or(false, |s| s.adopted),
+                path: managed.map(|s| s.path.to_string_lossy().into_owned()),
                 entry,
             }
         })
@@ -428,6 +638,7 @@ async fn check_releases() -> Result<Vec<ReleaseInfo>, String> {
 
 #[tauri::command]
 async fn install_app(id: String, file: String) -> Result<InstallResult, String> {
+    check_update_allowed(&id)?;
     let app = find_app(&id)?;
     tauri::async_runtime::spawn_blocking(move || install_blocking(&app, &file))
         .await
@@ -477,6 +688,9 @@ fn uninstall_entry(app: &AppEntry) -> Result<(), String> {
     let mut state = load_state();
     let entry = state.remove(&app.id);
     save_state(&state)?;
+    if entry.as_ref().map_or(false, |e| e.adopted) {
+        return Ok(()); // the user's own file: just stop tracking it
+    }
     let dir = data_dir().join("apps").join(&app.id);
     if entry.map_or(false, |e| e.folder) {
         let _ = fs::remove_dir_all(&dir);
@@ -492,6 +706,118 @@ fn uninstall_app(id: String) -> Result<(), String> {
     uninstall_entry(&find_app(&id)?)
 }
 
+#[derive(Serialize)]
+struct FolderInfo {
+    path: String,
+    custom: bool,
+    exists: bool,
+}
+
+#[derive(Serialize)]
+struct SettingsView {
+    /// True until the first-run existing-install check has been shown once.
+    first_run: bool,
+    existing_mode: String,
+    search_folders: bool,
+    /// Whether the launcher will search folders at all under the current choice.
+    scanning: bool,
+    folders: Vec<FolderInfo>,
+}
+
+fn settings_view() -> SettingsView {
+    let settings = load_settings();
+    let mut folders: Vec<FolderInfo> = default_scan_folders()
+        .into_iter()
+        .map(|p| FolderInfo { exists: p.is_dir(), path: p.to_string_lossy().into_owned(), custom: false })
+        .collect();
+    folders.extend(
+        settings
+            .extra_folders
+            .iter()
+            .map(|p| FolderInfo { exists: p.is_dir(), path: p.to_string_lossy().into_owned(), custom: true }),
+    );
+    SettingsView {
+        first_run: !settings.first_run_done,
+        scanning: scanning_enabled(&settings),
+        existing_mode: settings.existing_mode,
+        search_folders: settings.search_folders,
+        folders,
+    }
+}
+
+#[tauri::command]
+fn get_settings() -> SettingsView {
+    settings_view()
+}
+
+#[tauri::command]
+fn set_existing_mode(mode: String, search_folders: bool) -> Result<SettingsView, String> {
+    if !["auto", "manual", "in_place"].contains(&mode.as_str()) {
+        return Err(format!("unknown choice: {mode}"));
+    }
+    let mut settings = load_settings();
+    settings.existing_mode = mode;
+    settings.search_folders = search_folders;
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn finish_first_run() -> Result<(), String> {
+    let mut settings = load_settings();
+    settings.first_run_done = true;
+    save_settings(&settings)
+}
+
+#[tauri::command]
+fn add_scan_folder(path: String) -> Result<SettingsView, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("That is not a folder.".into());
+    }
+    let mut settings = load_settings();
+    if !settings.extra_folders.contains(&p) && !default_scan_folders().contains(&p) {
+        settings.extra_folders.push(p);
+        save_settings(&settings)?;
+    }
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn remove_scan_folder(path: String) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.extra_folders.retain(|p| p.to_string_lossy() != path);
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+/// Existing copies of your apps found in the searched folders (apps already set up are skipped).
+#[tauri::command]
+async fn scan_existing() -> Result<Vec<Candidate>, String> {
+    let apps = load_manifest()?;
+    let settings = load_settings();
+    if !scanning_enabled(&settings) {
+        return Ok(vec![]);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = load_state();
+        let mut folders = default_scan_folders();
+        folders.extend(settings.extra_folders);
+        let todo: Vec<AppEntry> = apps
+            .into_iter()
+            .filter(|a| !state.get(&a.id).map_or(false, |s| s.path.is_file()))
+            .collect();
+        scan_folders(&todo, &folders, &data_dir())
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn adopt_app(id: String, path: String) -> Result<(), String> {
+    adopt_entry(&find_app(&id)?, Path::new(&path))
+}
+
 #[tauri::command]
 fn open_repo(id: String) -> Result<(), String> {
     let app = find_app(&id)?;
@@ -500,7 +826,15 @@ fn open_repo(id: String) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            get_settings,
+            set_existing_mode,
+            finish_first_run,
+            add_scan_folder,
+            remove_scan_folder,
+            scan_existing,
+            adopt_app,
             get_device,
             list_apps,
             check_releases,
@@ -521,6 +855,125 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     type Routes = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+
+    /// Tests that set process-wide environment variables take turns.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn entry(id: &str, name: &str) -> AppEntry {
+        AppEntry { id: id.into(), name: name.into(), tagline: String::new(), repo: "me/x".into(), accent: None, untested_on: vec![] }
+    }
+
+    fn script(path: &Path, body: &str, mode: u32) {
+        fs::write(path, body).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let _ = mode;
+    }
+
+    #[test]
+    fn reads_versions_from_file_names() {
+        assert_eq!(version_from_name("HopCast-release-0.1.14-x86_64.AppImage"), Some("0.1.14".into()));
+        assert_eq!(version_from_name("Anti-Social-0.22.0.AppImage"), Some("0.22.0".into()));
+        assert_eq!(version_from_name("HopTunes-1.0-x86_64.AppImage"), Some("1.0".into()));
+        assert_eq!(version_from_name("HopTunes.AppImage"), None);
+        assert_eq!(version_from_name("x86_64"), None);
+    }
+
+    #[test]
+    fn scan_finds_only_your_apps_and_skips_the_rest() {
+        let d = std::env::temp_dir().join(format!("hopper-scan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("Downloads")).unwrap();
+        fs::create_dir_all(d.join("launcher/apps/hopcast")).unwrap();
+        for f in ["HopCast-release-0.1.14-x86_64.AppImage", "HopCast-debug-0.1.14-x86_64.AppImage", "Hop-Tunes_1.0.AppImage", "random.AppImage", "notes.txt"] {
+            script(&d.join("Downloads").join(f), "#!/bin/sh\n", 0o755);
+        }
+        // The launcher's own copy must never be offered back to the user.
+        script(&d.join("launcher/apps/hopcast/HopCast-0.1.15.AppImage"), "#!/bin/sh\n", 0o755);
+
+        let apps = vec![entry("hopcast", "HopCast"), entry("hop-tunes", "HopTunes"), entry("sudo-make-art", "sudo make art")];
+        let folders = vec![d.join("Downloads"), d.join("launcher/apps"), d.join("does-not-exist")];
+        let found = scan_folders(&apps, &folders, &d.join("launcher"));
+        let summary: Vec<_> = found.iter().map(|c| (c.app_id.as_str(), c.version.clone())).collect();
+        assert_eq!(summary, vec![("hopcast", Some("0.1.14".into())), ("hop-tunes", Some("1.0".into()))]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn existing_installs_stay_in_place_and_settings_are_respected() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("hopper-adopt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("mine")).unwrap();
+        std::env::set_var("HOPPER_DATA_DIR", d.join("data"));
+        let mark = d.join("mark");
+        std::env::set_var("HOPPER_TEST_MARK", &mark);
+        let app = entry("hopcast", "HopCast");
+        let theirs = d.join("mine/HopCast-release-0.1.14-x86_64.AppImage");
+        script(&theirs, "#!/bin/sh\necho ran > \"$HOPPER_TEST_MARK\"\n", 0o755);
+        let status = || {
+            let l = list_apps_from(vec![app.clone()]);
+            (l[0].installed, l[0].adopted, l[0].version.clone(), l[0].path.clone())
+        };
+
+        // Bad choices are refused with a clear reason.
+        assert!(adopt_entry(&app, &d.join("mine")).unwrap_err().contains("not a file"));
+        assert!(adopt_entry(&app, &d.join("mine/missing")).is_err());
+        let plain = d.join("mine/plain.AppImage");
+        script(&plain, "x", 0o644);
+        #[cfg(unix)]
+        assert!(adopt_entry(&app, &plain).unwrap_err().contains("runnable"));
+        assert_eq!(status().0, false);
+
+        // Adopting records the copy where it is, with its version from the file name.
+        adopt_entry(&app, &theirs).unwrap();
+        let (installed, adopted, version, path) = status();
+        assert!(installed && adopted);
+        assert_eq!(version, Some("0.1.14".into()));
+        assert_eq!(path, Some(theirs.to_string_lossy().into_owned()));
+
+        // Launching runs the user's own file in place.
+        launch_entry(&app).unwrap();
+        for _ in 0..50 {
+            if mark.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(mark.exists(), "the adopted app never ran");
+
+        // "Keep in place" refuses to replace it with a launcher download; the other choices allow it.
+        save_settings(&Settings { existing_mode: "in_place".into(), ..Settings::default() }).unwrap();
+        assert!(check_update_allowed("hopcast").is_err());
+        save_settings(&Settings { existing_mode: "auto".into(), ..Settings::default() }).unwrap();
+        assert!(check_update_allowed("hopcast").is_ok());
+        save_settings(&Settings { existing_mode: "manual".into(), ..Settings::default() }).unwrap();
+        assert!(check_update_allowed("hopcast").is_ok());
+        assert!(!scanning_enabled(&load_settings()), "manual mode must not scan");
+        save_settings(&Settings { existing_mode: "in_place".into(), search_folders: false, ..Settings::default() }).unwrap();
+        assert!(!scanning_enabled(&load_settings()));
+        save_settings(&Settings { existing_mode: "in_place".into(), search_folders: true, ..Settings::default() }).unwrap();
+        assert!(scanning_enabled(&load_settings()));
+
+        // Uninstalling an adopted app only forgets it. The file is never touched.
+        uninstall_entry(&app).unwrap();
+        assert_eq!(status().0, false);
+        assert!(theirs.is_file(), "the user's own file was deleted");
+
+        // A copy installed by the launcher itself must be removed before adopting another.
+        let managed = d.join("data/apps/hopcast/HopCast-0.1.15.AppImage");
+        fs::create_dir_all(managed.parent().unwrap()).unwrap();
+        script(&managed, "#!/bin/sh\n", 0o755);
+        let mut st = load_state();
+        st.insert("hopcast".into(), InstalledApp { tag: "v0.1.15".into(), path: managed, folder: false, adopted: false });
+        save_state(&st).unwrap();
+        assert!(adopt_entry(&app, &theirs).unwrap_err().contains("already installed"));
+
+        fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn reads_checksum_lines() {
@@ -626,6 +1079,7 @@ mod tests {
     /// One test drives the whole flow because it sets process-wide environment variables.
     #[test]
     fn install_launch_update_uninstall_against_fake_github() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let data = std::env::temp_dir().join(format!("hopper-data-{}", std::process::id()));
         let _ = fs::remove_dir_all(&data);
         std::env::set_var("HOPPER_DATA_DIR", &data);
