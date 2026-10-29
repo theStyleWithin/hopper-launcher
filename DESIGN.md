@@ -18,7 +18,7 @@ Current list: Alias Maker, Anti-Social, HopCast, HopTunes, sudo make art, sudo m
 Each app has a `builds` list. A build is `os` (`linux`, `windows`, `android`),
 `arch` (`x86_64`, `aarch64`, or `any`), `kind` (`appimage`, `installer`,
 `portable`, `zip`, `apk`), `asset` (text the release file name must contain),
-and optional `untested: true`. An app with no build for the current device
+and optional `untested: true` or `planned: true` (the build does not exist yet; shown as "Coming soon" with no Install button). An app with no build for the current device
 stays visible, greyed out, as "Not available for <OS> yet".
 
 ## Hardware detector

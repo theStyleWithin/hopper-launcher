@@ -91,8 +91,8 @@ footer { margin-top: 24px; color: var(--dim); font-size: 12px; line-height: 16px
 const APPS = [
   {n:"Alias Maker", t:"Mario Maker for terminal commands", b:[["linux","x86_64","AppImage"]]},
   {n:"Anti-Social", t:"Social media where nobody sees your posts", b:[["linux","x86_64","AppImage"],["windows","x86_64","Installer"],["android","any","APK"]]},
-  {n:"HopCast", t:"Bloat-free, easy livestreaming", b:[["linux","x86_64","AppImage"]]},
-  {n:"HopTunes", t:"Sleek, minimalist media player", b:[["linux","x86_64","AppImage"]]},
+  {n:"HopCast", t:"Bloat-free, easy livestreaming", b:[["linux","x86_64","AppImage"],["windows","x86_64","Installer"],["android","any","APK",2]]},
+  {n:"HopTunes", t:"Sleek, minimalist media player", b:[["linux","x86_64","AppImage"],["android","any","APK",2]]},
   {n:"sudo make art", t:"Offline, local-only design tool", b:[["linux","x86_64","AppImage"],["windows","x86_64","Installer",1],["android","any","APK",1]]},
   {n:"sudo make music", t:"Offline AI music generation", b:[["linux","x86_64","AppImage"],["windows","x86_64","Portable",1],["android","any","APK",1]]},
 ];
@@ -110,20 +110,21 @@ function render() {
   const d = DEV[$("dev").value];
   $("devname").textContent = "Detected: " + d.name;
   $("devspec").textContent = d.spec;
-  const n = APPS.filter((a) => pick(a, d)).length;
+  const n = APPS.filter((a) => { const m = pick(a, d); return m && m[3] !== 2; }).length;
   $("devnote").textContent = n + " of " + APPS.length + " apps have a build for this device";
   $("grid").replaceChildren(...APPS.map((a) => {
     const m = pick(a, d), t = document.createElement("section");
     t.className = "tile";
-    const status = m ? (m[3] ? ["warn", "Build available (untested)"] : ["ok", "Recommended: " + m[2]])
+    const planned = m && m[3] === 2;
+    const status = planned ? ["no", "Coming soon"] : m ? (m[3] ? ["warn", "Build available (untested)"] : ["ok", "Recommended: " + m[2]])
                      : ["no", "Not available for " + d.name.split(" ")[0] + " yet"];
     t.innerHTML = `<div><h2></h2><div class="tag"></div></div><div class="row"><span class="chip ${status[0]}"></span><button class="go"></button></div>`;
     t.querySelector("h2").textContent = a.n;
     t.querySelector(".tag").textContent = a.t;
     t.querySelector(".chip").textContent = status[1];
     const btn = t.querySelector(".go");
-    btn.textContent = m ? "Install" : "Unavailable";
-    btn.disabled = !m;
+    btn.textContent = planned ? "Coming soon" : m ? "Install" : "Unavailable";
+    btn.disabled = !m || planned;
     return t;
   }));
 }

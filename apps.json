@@ -8,7 +8,12 @@
       "repo": "gamehopper/Alias-maker",
       "accent": "#2ee6a6",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        }
       ]
     },
     {
@@ -18,10 +23,30 @@
       "repo": "gamehopper/anti-social",
       "accent": "#ff3ea5",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
-        { "os": "windows", "arch": "x86_64", "kind": "installer", "asset": "Anti-Social-Setup" },
-        { "os": "windows", "arch": "x86_64", "kind": "portable", "asset": "-portable.exe" },
-        { "os": "android", "arch": "any", "kind": "apk", "asset": ".apk" }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "installer",
+          "asset": "Anti-Social-Setup"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "portable",
+          "asset": "-portable.exe"
+        },
+        {
+          "os": "android",
+          "arch": "any",
+          "kind": "apk",
+          "asset": ".apk"
+        }
       ]
     },
     {
@@ -31,7 +56,24 @@
       "repo": "gamehopper/hopcast",
       "accent": "#7a5cff",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "installer",
+          "asset": ".exe"
+        },
+        {
+          "os": "android",
+          "arch": "any",
+          "kind": "apk",
+          "planned": true
+        }
       ]
     },
     {
@@ -41,7 +83,18 @@
       "repo": "gamehopper/Hop-tunes",
       "accent": "#ff5ea8",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        },
+        {
+          "os": "android",
+          "arch": "any",
+          "kind": "apk",
+          "planned": true
+        }
       ]
     },
     {
@@ -51,9 +104,26 @@
       "repo": "gamehopper/sudo-make-art",
       "accent": "#ffb02e",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
-        { "os": "windows", "arch": "x86_64", "kind": "installer", "asset": ".exe", "untested": true },
-        { "os": "android", "arch": "any", "kind": "apk", "asset": ".apk", "untested": true }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "installer",
+          "asset": ".exe",
+          "untested": true
+        },
+        {
+          "os": "android",
+          "arch": "any",
+          "kind": "apk",
+          "asset": ".apk",
+          "untested": true
+        }
       ]
     },
     {
@@ -63,10 +133,33 @@
       "repo": "gamehopper/sudo-make-music",
       "accent": "#19e3ff",
       "builds": [
-        { "os": "linux", "arch": "x86_64", "kind": "appimage", "asset": ".AppImage" },
-        { "os": "windows", "arch": "x86_64", "kind": "portable", "asset": "sudo-make-music-portable.exe", "untested": true },
-        { "os": "windows", "arch": "x86_64", "kind": "zip", "asset": "windows-folder.zip", "untested": true },
-        { "os": "android", "arch": "any", "kind": "apk", "asset": "android.apk", "untested": true }
+        {
+          "os": "linux",
+          "arch": "x86_64",
+          "kind": "appimage",
+          "asset": ".AppImage"
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "portable",
+          "asset": "sudo-make-music-portable.exe",
+          "untested": true
+        },
+        {
+          "os": "windows",
+          "arch": "x86_64",
+          "kind": "zip",
+          "asset": "windows-folder.zip",
+          "untested": true
+        },
+        {
+          "os": "android",
+          "arch": "any",
+          "kind": "apk",
+          "asset": "android.apk",
+          "untested": true
+        }
       ]
     }
   ]
