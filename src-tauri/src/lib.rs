@@ -326,6 +326,39 @@ fn make_executable(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// When the launcher runs as an AppImage, its start-up script points many environment
+/// variables (PYTHONHOME, LD_LIBRARY_PATH, GTK_PATH, PATH ...) at the launcher's own
+/// bundled files. An app started from here must not inherit those, or it looks for its
+/// libraries in the wrong place and fails to start. This removes exactly what points
+/// into the launcher's own AppImage and keeps everything that came from the system.
+#[cfg_attr(target_os = "android", allow(dead_code))]
+fn scrub_appimage_env(cmd: &mut Command) {
+    let Some(appdir) = std::env::var("APPDIR").ok().map(|d| d.trim_end_matches('/').to_string()).filter(|d| !d.is_empty()) else {
+        return; // not running as an AppImage: nothing was added
+    };
+    let inside = |p: &str| p == appdir || p.starts_with(&format!("{appdir}/"));
+    for (key, value) in std::env::vars_os() {
+        let Some(value) = value.to_str() else { continue };
+        if !value.split(':').any(|p| inside(p)) {
+            continue;
+        }
+        let kept: Vec<&str> = value.split(':').filter(|p| !p.is_empty() && !inside(p)).collect();
+        if kept.is_empty() {
+            cmd.env_remove(&key);
+        } else {
+            cmd.env(&key, kept.join(":"));
+        }
+    }
+    // Set by the AppImage runtime itself, only meaningful for the launcher.
+    for key in ["APPDIR", "APPIMAGE", "ARGV0", "OWD"] {
+        cmd.env_remove(key);
+    }
+    // The GTK helper in the AppImage forces this when nothing else did.
+    if std::env::var("GTK_THEME").map_or(false, |t| t == "Adwaita:light") {
+        cmd.env_remove("GTK_THEME");
+    }
+}
+
 fn open_with_system(target: &str) -> Result<(), String> {
     #[cfg(target_os = "android")]
     return android_call("openUrl", serde_json::json!({ "url": target })).map(|_| ());
@@ -345,6 +378,7 @@ fn open_with_system(target: &str) -> Result<(), String> {
 
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
+        scrub_appimage_env(&mut cmd);
         cmd.arg(target)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -782,6 +816,7 @@ fn launch_file(app: &AppEntry) -> Result<(), String> {
         .ok_or_else(|| format!("{} is not installed", app.name))?;
 
     let mut cmd = Command::new(target);
+    scrub_appimage_env(&mut cmd);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // Put the app in its own process group (Windows: detached) so closing the
     // launcher, or the terminal it was started from, never takes the app with it.
@@ -1064,6 +1099,92 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
         }
         let _ = mode;
+    }
+
+    /// The environment a child would get: the process's own, changed by what the Command sets or removes.
+    fn child_env(cmd: &Command) -> HashMap<String, String> {
+        let mut env: HashMap<String, String> =
+            std::env::vars().collect();
+        for (k, v) in cmd.get_envs() {
+            let k = k.to_string_lossy().into_owned();
+            match v {
+                Some(v) => env.insert(k, v.to_string_lossy().into_owned()),
+                None => env.remove(&k),
+            };
+        }
+        env
+    }
+
+    #[test]
+    fn apps_do_not_inherit_the_launchers_appimage_settings() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let mount = "/tmp/.mount_HopperAbc123";
+        let saved: Vec<(String, Option<String>)> = ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "PYTHONHOME", "PYTHONPATH", "LD_LIBRARY_PATH", "PATH", "GTK_PATH", "XDG_DATA_DIRS", "GTK_THEME", "MY_OWN_SETTING"]
+            .iter()
+            .map(|k| (k.to_string(), std::env::var(k).ok()))
+            .collect();
+
+        std::env::set_var("APPDIR", mount);
+        std::env::set_var("APPIMAGE", "/home/me/Hopper-Launcher.AppImage");
+        std::env::set_var("ARGV0", "Hopper-Launcher.AppImage");
+        std::env::set_var("OWD", "/home/me");
+        std::env::set_var("PYTHONHOME", format!("{mount}/usr/")); // entirely the launcher's
+        std::env::set_var("PYTHONPATH", format!("{mount}/usr/share/pyshared/:"));
+        std::env::set_var("LD_LIBRARY_PATH", format!("{mount}/usr/lib/:/opt/cuda/lib:{mount}//usr/lib/i386-linux-gnu")); // mixed
+        std::env::set_var("PATH", format!("{mount}/usr/bin/:/usr/local/bin:/usr/bin:{mount}/usr/sbin/"));
+        std::env::set_var("GTK_PATH", format!("{mount}//usr/lib/gtk-3.0"));
+        std::env::set_var("XDG_DATA_DIRS", format!("{mount}/usr/share/:/usr/share:"));
+        std::env::set_var("GTK_THEME", "Adwaita:light");
+        std::env::set_var("MY_OWN_SETTING", format!("{mount}-lookalike/keep")); // only looks similar
+
+        let mut cmd = Command::new("true");
+        scrub_appimage_env(&mut cmd);
+        let env = child_env(&cmd);
+
+        for gone in ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "PYTHONHOME", "PYTHONPATH", "GTK_PATH", "GTK_THEME"] {
+            assert!(!env.contains_key(gone), "{gone} leaked into the app");
+        }
+        assert_eq!(env["LD_LIBRARY_PATH"], "/opt/cuda/lib", "the system's own part must stay");
+        assert_eq!(env["PATH"], "/usr/local/bin:/usr/bin");
+        assert_eq!(env["XDG_DATA_DIRS"], "/usr/share");
+        assert_eq!(env["MY_OWN_SETTING"], format!("{mount}-lookalike/keep"), "a similar-looking path was removed");
+
+        // Without an AppImage nothing is touched at all.
+        std::env::remove_var("APPDIR");
+        let mut cmd = Command::new("true");
+        scrub_appimage_env(&mut cmd);
+        assert_eq!(cmd.get_envs().count(), 0);
+
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(&k, v),
+                None => std::env::remove_var(&k),
+            }
+        }
+    }
+
+    /// Not a normal test: reads an environment from HOPPER_ENV_IN, runs the real clean-up on it,
+    /// and writes the result to HOPPER_ENV_OUT, so real apps can be started with exactly that.
+    #[test]
+    #[ignore]
+    fn dump_scrubbed_env() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let (input, output) = (std::env::var("HOPPER_ENV_IN").unwrap(), std::env::var("HOPPER_ENV_OUT").unwrap());
+        for (k, _) in std::env::vars_os().collect::<Vec<_>>() {
+            std::env::remove_var(k);
+        }
+        for line in fs::read_to_string(&input).unwrap().lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                std::env::set_var(k, v);
+            }
+        }
+        let mut cmd = Command::new("true");
+        scrub_appimage_env(&mut cmd);
+        let mut out = String::new();
+        for (k, v) in child_env(&cmd) {
+            out.push_str(&format!("{k}={v}\n"));
+        }
+        fs::write(output, out).unwrap();
     }
 
     #[test]

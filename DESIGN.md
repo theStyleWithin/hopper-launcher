@@ -70,6 +70,15 @@ away. (An optional "close the launcher after launching" setting is a possible
 later addition.) Updates appear on the tile when a newer release exists, and
 install files live in the launcher's own folder (see the install notes in `ROADMAP.md`).
 
+## Starting apps
+The launcher starts every app as a separate program (see above). When the launcher
+itself runs as an AppImage, its start-up script points many environment variables
+(PYTHONHOME, PYTHONPATH, LD_LIBRARY_PATH, GTK_PATH, PATH and others) at the launcher's own
+bundled files. Passing those on made apps that ship their own Python or libraries
+crash on start (sudo make music and Alias Maker did exactly this). So the launcher removes
+only what points into its own AppImage, keeps everything that came from the system, and
+does the same before opening a web link. When the launcher is not an AppImage, nothing is changed.
+
 ## New releases and updates
 The launcher finds out about new releases by asking GitHub itself. It does not
 phone home to a server of ours, so nothing identifies the user and no server has
