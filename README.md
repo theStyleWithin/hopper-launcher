@@ -35,6 +35,14 @@ update is available.
 
 *The Internet Archive backup, which is off by default. When it is switched on in Settings, a list of preserved files appears beside the tiles, with filters and a search box. You pick a file yourself, and it is checked and saved to your Downloads folder.*
 
+![The launcher when an app's source is gone: the app that is not installed is replaced by a short message, the installed one keeps Launch, and the corner shows internet and GitHub status.](docs/images/when-an-app-is-gone.png)
+
+*If an app's repository disappears and the app is not installed, its slot shows a short message instead of an install button. An app you have installed always keeps its tile and **Launch** button; it just can't update. The two small indicators in the corner show your internet and GitHub's status.*
+
+![The launcher with no internet: the installed apps still show Launch, and the corner says offline.](docs/images/offline.png)
+
+*With no internet, nothing you already have stops working. The corner turns grey and the rest says so plainly.*
+
 ![The launcher in the Midnight and Paper (light) themes.](docs/images/themes.png)
 
 *Three themes (Cyberpunk is the default, shown above), plus an accent colour picker. Midnight and Paper are shown here.*
@@ -95,9 +103,19 @@ page says which systems it supports, and the launcher only shows the builds that
   checked against the archive's checksums (and the developer's `SHA256SUMS` when one is there). The launcher
   only contacts archive.org while this is switched on, and it never switches to it by itself.
 - Launched apps run on their own, so closing the launcher never closes them.
-- It only talks to GitHub (and to archive.org, only if you switch the backup on) while it is open: when it starts, when you press "Check for updates",
-  and every 3 hours after that (a quick "anything new?" question that costs GitHub almost nothing).
-  Nothing runs when the launcher is closed, and no server of ours is involved.
+- **Nothing needs the internet to work.** Apps you have installed launch offline, and settings, themes and
+  ordering all work. Only installing, updating and browsing the backup need a connection.
+- **Status in the corner.** Two small indicators show whether you are online and whether GitHub is working
+  (it reads GitHub's own status page, githubstatus.com). On by default; there is a switch in Settings.
+- **If an app can no longer be delivered** (its repository is pulled, or GitHub is gone), an app you have
+  installed keeps its tile and **Launch** button and simply can't update. An app you have *not* installed is
+  replaced by a short message, "I'm sorry, Dave. I can't help you." The launcher is patient about this: a
+  repository must be reported missing twice, at least a day apart, or GitHub must be unreachable for a full
+  week while your internet works. Being offline, a short outage or a rate limit never removes anything, and
+  it all comes back by itself when the source does.
+- It only talks to the internet while it is open: GitHub (to read releases), githubstatus.com (for the corner
+  status; can be switched off), archive.org (only if you switch the backup on) and, only when GitHub does not
+  answer, a bare connection to a public DNS server (nothing is sent) to tell "you are offline" from "GitHub is down".
 - How apps are installed: on Linux an AppImage is saved and made runnable; on Windows a zip is unpacked
   and an installer is handed to Windows; on Android the APK is handed to Android's own installer.
 - Apps it installs live in `~/.local/share/hopper-launcher/` on Linux and `%APPDATA%\hopper-launcher\`

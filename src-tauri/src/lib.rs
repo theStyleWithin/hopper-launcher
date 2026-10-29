@@ -72,12 +72,29 @@ struct AppInfo {
     ignored_version: Option<String>,
 }
 
+/// What we know about where an app can be fetched from right now.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Source {
+    /// Working, or simply nothing to report.
+    Ok,
+    /// The repository exists but has no release yet.
+    NoRelease,
+    /// The user's own internet looks down. Says nothing about GitHub.
+    Offline,
+    /// GitHub (or this one repository) is failing, but not for long enough to give up on it.
+    Trouble,
+    /// Gone for long enough, or confirmed twice: this app can no longer be delivered.
+    Gone,
+}
+
 #[derive(Serialize)]
 struct ReleaseInfo {
     id: String,
     tag: Option<String>,
     builds: Vec<Build>,
     error: Option<String>,
+    source: Source,
 }
 
 #[derive(Serialize, Debug)]
@@ -89,7 +106,7 @@ struct InstallResult {
     handed_off: bool,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 struct Release {
     tag_name: String,
     assets: Vec<Asset>,
@@ -187,25 +204,98 @@ fn cached_release(repo: &str) -> Option<(String, Release)> {
     RELEASE_CACHE.lock().ok()?.as_ref()?.get(repo).cloned()
 }
 
+/// The web client. Without timeouts a network that connects but goes nowhere could leave a check hanging
+/// for minutes, so it gives up on connecting after 10 seconds (the numbers can be changed for tests).
+fn http() -> ureq::Agent {
+    let secs = |name: &str, default: u64| std::time::Duration::from_secs(std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default));
+    ureq::AgentBuilder::new()
+        .timeout_connect(secs("HOPPER_CONNECT_TIMEOUT_SECS", 10))
+        .timeout_read(secs("HOPPER_READ_TIMEOUT_SECS", 60))
+        .timeout_write(secs("HOPPER_WRITE_TIMEOUT_SECS", 30))
+        .build()
+}
+
+/// Why a repository's releases could not be read.
+#[derive(Debug, Clone, PartialEq)]
+enum SourceError {
+    /// The repository exists but has no release yet.
+    NoRelease,
+    /// GitHub says the repository does not exist, or is blocked (404 or 451 for the repo itself).
+    Gone,
+    /// GitHub is up but asked us to slow down.
+    RateLimited,
+    /// Could not get an answer: no network, DNS or connection trouble, a timeout, or a GitHub server error.
+    Unreachable(String),
+    Other(String),
+}
+
+impl SourceError {
+    fn message(&self) -> String {
+        match self {
+            SourceError::NoRelease => "No release published yet".into(),
+            SourceError::Gone => "No longer available".into(),
+            SourceError::RateLimited => "GitHub rate limit reached, try again later".into(),
+            SourceError::Unreachable(_) => "Can't reach GitHub right now".into(),
+            SourceError::Other(m) => m.clone(),
+        }
+    }
+}
+
+/// GitHub marks a real rate limit with headers. Any other "403" (a gateway, a captive portal, a block)
+/// just means we could not get through.
+fn forbidden(resp: &ureq::Response) -> SourceError {
+    if resp.header("x-ratelimit-remaining") == Some("0") || resp.header("retry-after").is_some() {
+        SourceError::RateLimited
+    } else {
+        SourceError::Unreachable("access denied (HTTP 403)".into())
+    }
+}
+
+/// Does the repository itself still exist? Ok(false) means GitHub says it is gone or blocked.
+fn repo_exists(repo: &str) -> Result<bool, SourceError> {
+    let url = format!("{}/repos/{repo}", api_base());
+    match http().get(&url).set("User-Agent", "hopper-launcher").set("Accept", "application/vnd.github+json").call() {
+        Ok(_) => Ok(true),
+        Err(ureq::Error::Status(404 | 451, _)) => Ok(false),
+        Err(ureq::Error::Status(429, _)) => Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(403, r)) => Err(forbidden(&r)),
+        Err(ureq::Error::Status(code, _)) => Err(SourceError::Unreachable(format!("HTTP {code}"))),
+        Err(other) => Err(SourceError::Unreachable(other.to_string())),
+    }
+}
+
 fn latest_release(repo: &str) -> Result<Release, String> {
+    latest_release_typed(repo).map_err(|e| e.message())
+}
+
+fn latest_release_typed(repo: &str) -> Result<Release, SourceError> {
     let url = format!("{}/repos/{repo}/releases/latest", api_base());
     let cached = cached_release(repo);
-    let mut req = ureq::get(&url)
+    let mut req = http().get(&url)
         .set("User-Agent", "hopper-launcher")
         .set("Accept", "application/vnd.github+json");
     if let Some((etag, _)) = &cached {
         req = req.set("If-None-Match", etag);
     }
-    let resp = req.call().map_err(|e| match e {
-        ureq::Error::Status(404, _) => "No release published yet".to_string(),
-        ureq::Error::Status(403 | 429, _) => "GitHub rate limit reached, try again later".to_string(),
-        other => format!("Could not reach GitHub: {other}"),
-    })?;
+    let resp = match req.call() {
+        Ok(r) => r,
+        // "not found" is either "no release yet" or "no such repository": ask which
+        Err(ureq::Error::Status(404, _)) => {
+            return Err(if repo_exists(repo)? { SourceError::NoRelease } else { SourceError::Gone });
+        }
+        Err(ureq::Error::Status(451, _)) => return Err(SourceError::Gone),
+        Err(ureq::Error::Status(429, _)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(403, r)) => return Err(forbidden(&r)),
+        Err(ureq::Error::Status(code, _)) => return Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
+        Err(other) => return Err(SourceError::Unreachable(other.to_string())),
+    };
     if resp.status() == 304 {
-        return cached.map(|(_, r)| r).ok_or_else(|| "GitHub said nothing changed, but there is nothing saved".to_string());
+        return cached
+            .map(|(_, r)| r)
+            .ok_or_else(|| SourceError::Other("GitHub said nothing changed, but there is nothing saved".into()));
     }
     let etag = resp.header("etag").map(str::to_string);
-    let release: Release = resp.into_json().map_err(|e| e.to_string())?;
+    let release: Release = resp.into_json().map_err(|e| SourceError::Other(e.to_string()))?;
     if let (Some(etag), Ok(mut cache)) = (etag, RELEASE_CACHE.lock()) {
         cache.get_or_insert_with(HashMap::new).insert(repo.to_string(), (etag, release.clone()));
     }
@@ -230,7 +320,7 @@ impl<W: Write> Write for HashingWriter<W> {
 }
 
 fn download(url: &str, dest: &Path) -> Result<String, String> {
-    let resp = ureq::get(url)
+    let resp = http().get(url)
         .set("User-Agent", "hopper-launcher")
         .call()
         .map_err(|e| format!("Download failed: {e}"))?;
@@ -259,7 +349,7 @@ fn expected_hash(sums: &str, file: &str) -> Option<String> {
 /// Some(true) = matched, Some(false) = a published checksum did not match, None = none published.
 fn verify(release: &Release, file: &str, actual: &str) -> Option<bool> {
     for a in release.assets.iter().filter(|a| a.name.to_lowercase().contains("sha256")) {
-        let Ok(resp) = ureq::get(&a.browser_download_url).set("User-Agent", "hopper-launcher").call() else { continue };
+        let Ok(resp) = http().get(&a.browser_download_url).set("User-Agent", "hopper-launcher").call() else { continue };
         let mut text = String::new();
         if resp.into_reader().take(1 << 20).read_to_string(&mut text).is_err() {
             continue;
@@ -269,6 +359,206 @@ fn verify(release: &Release, file: &str, actual: &str) -> Option<bool> {
         }
     }
     None
+}
+
+// ---------- GitHub's own status page ----------
+
+/// GitHub's public status page. Its feed says in one word whether GitHub is working.
+const GITHUB_STATUS_PAGE: &str = "https://www.githubstatus.com";
+
+fn status_api_url() -> String {
+    std::env::var("HOPPER_STATUS_URL").unwrap_or_else(|_| format!("{GITHUB_STATUS_PAGE}/api/v2/status.json"))
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+struct GithubStatus {
+    /// "none" (all working), "minor", "major", "critical", "maintenance", or "unknown" (could not be read).
+    indicator: String,
+    description: String,
+}
+
+fn fetch_github_status() -> GithubStatus {
+    let unknown = |why: &str| GithubStatus { indicator: "unknown".into(), description: why.into() };
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(4))
+        .timeout_read(std::time::Duration::from_secs(6))
+        .build();
+    let resp = match agent.get(&status_api_url()).set("User-Agent", "hopper-launcher").call() {
+        Ok(r) => r,
+        Err(_) => return unknown("Can't reach githubstatus.com"),
+    };
+    let Ok(v) = resp.into_json::<serde_json::Value>() else { return unknown("Unreadable answer from githubstatus.com") };
+    let indicator = match v["status"]["indicator"].as_str() {
+        Some(i @ ("none" | "minor" | "major" | "critical" | "maintenance")) => i,
+        _ => "unknown",
+    };
+    GithubStatus { indicator: indicator.into(), description: v["status"]["description"].as_str().unwrap_or("").to_string() }
+}
+
+/// What the corner indicator shows: is the user online, and is GitHub working?
+#[derive(Serialize, Clone, Debug, PartialEq)]
+struct NetworkStatus {
+    /// "online", "offline", or "off" (hidden in Settings).
+    internet: String,
+    github: GithubStatus,
+}
+
+/// A bare connection to a public DNS server, with no data sent. Says whether the user's internet works.
+fn tcp_probe() -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    let list = std::env::var("HOPPER_PROBE_ADDRS").unwrap_or_else(|_| "1.1.1.1:443,8.8.8.8:53".into());
+    list.split(',').filter_map(|a| a.trim().to_socket_addrs().ok().and_then(|mut i| i.next())).any(|addr| {
+        TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)).is_ok()
+    })
+}
+
+/// GitHub's status page is hosted apart from GitHub, so if it answers, the user is online. If it does not,
+/// a bare connection check tells "you are offline" from "you are online but that page is unreachable".
+fn check_network() -> NetworkStatus {
+    let github = fetch_github_status();
+    if github.indicator != "unknown" || tcp_probe() {
+        return NetworkStatus { internet: "online".into(), github };
+    }
+    NetworkStatus {
+        internet: "offline".into(),
+        github: GithubStatus { indicator: "unknown".into(), description: "No internet connection".into() },
+    }
+}
+
+/// Reads the internet and GitHub status, unless the user turned the indicator off. Nothing else
+/// in the launcher waits for this, and nothing needs the internet to work.
+#[tauri::command]
+async fn network_status() -> Result<NetworkStatus, String> {
+    if !load_settings().show_status {
+        return Ok(NetworkStatus { internet: "off".into(), github: GithubStatus { indicator: "off".into(), description: "Hidden in Settings".into() } });
+    }
+    tauri::async_runtime::spawn_blocking(check_network).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_show_status(enabled: bool) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.show_status = enabled;
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn open_github_status_page() -> Result<(), String> {
+    open_with_system(GITHUB_STATUS_PAGE)
+}
+
+// ---------- is an app's source still there? ----------
+//
+// An app only counts as gone after repeated, patient evidence: GitHub unreachable for a full week while
+// other connections work, or the repository reported missing twice at least a day apart. A flaky network,
+// a short outage or a missing internet connection never remove anything.
+
+const TROUBLE_BEFORE_GONE_SECS: u64 = 7 * 24 * 3600;
+const MISSING_CONFIRM_SECS: u64 = 24 * 3600;
+
+#[derive(Deserialize, Serialize, Clone, Default, Debug, PartialEq)]
+struct Health {
+    /// When GitHub first failed to answer (while the internet worked).
+    #[serde(default)]
+    unreachable_since: Option<u64>,
+    /// When the repository was first reported missing.
+    #[serde(default)]
+    missing_since: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Outcome {
+    Fine,
+    NoRelease,
+    Gone,
+    RateLimited,
+    Unreachable,
+}
+
+fn outcome_of(r: &Result<Release, SourceError>) -> Outcome {
+    match r {
+        Ok(_) => Outcome::Fine,
+        Err(SourceError::NoRelease) => Outcome::NoRelease,
+        Err(SourceError::Gone) => Outcome::Gone,
+        Err(SourceError::RateLimited) => Outcome::RateLimited,
+        Err(SourceError::Unreachable(_)) | Err(SourceError::Other(_)) => Outcome::Unreachable,
+    }
+}
+
+/// Decides what a check means, given what was seen before. `internet` says whether the user's own
+/// connection works (only asked for when GitHub did not answer).
+fn assess(prev: &Health, outcome: Outcome, internet: bool, now: u64) -> (Source, Health) {
+    match outcome {
+        Outcome::Fine => (Source::Ok, Health::default()),
+        Outcome::NoRelease => (Source::NoRelease, Health::default()),
+        // GitHub is answering, just not with data: change nothing
+        Outcome::RateLimited => (Source::Ok, prev.clone()),
+        Outcome::Unreachable if !internet => (Source::Offline, prev.clone()),
+        Outcome::Unreachable => {
+            let since = prev.unreachable_since.unwrap_or(now);
+            let state = if now.saturating_sub(since) >= TROUBLE_BEFORE_GONE_SECS { Source::Gone } else { Source::Trouble };
+            (state, Health { unreachable_since: Some(since), missing_since: prev.missing_since })
+        }
+        Outcome::Gone => {
+            let since = prev.missing_since.unwrap_or(now);
+            let confirmed = prev.missing_since.is_some() && now.saturating_sub(since) >= MISSING_CONFIRM_SECS;
+            (if confirmed { Source::Gone } else { Source::Trouble }, Health { unreachable_since: prev.unreachable_since, missing_since: Some(since) })
+        }
+    }
+}
+
+fn health_path() -> PathBuf {
+    data_dir().join("health.json")
+}
+
+fn load_health() -> HashMap<String, Health> {
+    fs::read_to_string(health_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_health(h: &HashMap<String, Health>) {
+    if fs::create_dir_all(data_dir()).is_ok() {
+        if let Ok(text) = serde_json::to_string_pretty(h) {
+            let _ = fs::write(health_path(), text);
+        }
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Is the user's own internet working? Used only when GitHub did not answer, to tell "you are offline"
+/// from "GitHub is down". Asks GitHub's status page first (skipped when the indicator is turned off, so
+/// nothing extra is contacted), then falls back to a bare connection check.
+fn internet_works() -> bool {
+    if load_settings().show_status && fetch_github_status().indicator != "unknown" {
+        return true;
+    }
+    tcp_probe()
+}
+
+/// Reads every app's latest release, then works out what each result means.
+fn check_all(apps: &[AppEntry], dev: &device::Device, now: u64) -> Vec<ReleaseInfo> {
+    let results: Vec<(String, Result<Release, SourceError>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = apps.iter().map(|app| s.spawn(move || (app.id.clone(), latest_release_typed(&app.repo)))).collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let internet = if results.iter().any(|(_, r)| outcome_of(r) == Outcome::Unreachable) { internet_works() } else { true };
+    let mut health = load_health();
+    let infos = results
+        .into_iter()
+        .map(|(id, result)| {
+            let (source, new_health) = assess(&health.get(&id).cloned().unwrap_or_default(), outcome_of(&result), internet, now);
+            health.insert(id.clone(), new_health);
+            match result {
+                Ok(r) => ReleaseInfo { id, builds: builds_for(&r.assets, &dev.os, &dev.arch), tag: Some(r.tag_name), error: None, source },
+                Err(e) => ReleaseInfo { id, tag: None, builds: vec![], error: Some(e.message()), source },
+            }
+        })
+        .collect();
+    save_health(&health);
+    infos
 }
 
 // ---------- installing ----------
@@ -520,11 +810,14 @@ struct Settings {
     /// Show the Internet Archive backup. Off until the user turns it on.
     #[serde(default)]
     archive_enabled: bool,
+    /// Show the internet and GitHub status in the corner (reads githubstatus.com). On unless the user turns it off.
+    #[serde(default = "default_true")]
+    show_status: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true }
     }
 }
 
@@ -756,7 +1049,7 @@ fn fetch_archive_metadata(item: &str) -> Result<serde_json::Value, String> {
         return Err("That item name is not valid".into());
     }
     let url = format!("{}/metadata/{item}", archive_base());
-    let resp = ureq::get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| match e {
+    let resp = http().get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| match e {
         ureq::Error::Status(404, _) => "Not found on the Internet Archive".to_string(),
         ureq::Error::Status(403 | 429, _) => "The Internet Archive asked us to slow down. Try again later.".to_string(),
         other => format!("Could not reach the Internet Archive: {other}"),
@@ -875,7 +1168,7 @@ fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMu
     let part = dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")));
 
     let url = format!("{}/download/{item}/{}", archive_base(), percent_encode(file));
-    let resp = ureq::get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| format!("Download failed: {e}"))?;
+    let resp = http().get(&url).set("User-Agent", "hopper-launcher").call().map_err(|e| format!("Download failed: {e}"))?;
     let (sha256, sha1) = {
         let mut w = ArchiveWriter {
             inner: fs::File::create(&part).map_err(|e| e.to_string())?,
@@ -908,7 +1201,7 @@ fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMu
     for e in entries.iter().filter(|f| f["name"].as_str().map_or(false, |n| n.to_lowercase().contains("sha256")) && f.get("size").and_then(json_number).unwrap_or(0) < (1 << 20)) {
         let Some(sums_name) = e["name"].as_str() else { continue };
         let sums_url = format!("{}/download/{item}/{}", archive_base(), percent_encode(sums_name));
-        let Ok(r) = ureq::get(&sums_url).set("User-Agent", "hopper-launcher").call() else { continue };
+        let Ok(r) = http().get(&sums_url).set("User-Agent", "hopper-launcher").call() else { continue };
         let mut text = String::new();
         if r.into_reader().take(1 << 20).read_to_string(&mut text).is_err() {
             continue;
@@ -1118,28 +1411,9 @@ fn list_apps() -> Result<Vec<AppInfo>, String> {
 async fn check_releases() -> Result<Vec<ReleaseInfo>, String> {
     let apps = load_manifest()?;
     let dev = device::detect();
-    tauri::async_runtime::spawn_blocking(move || {
-        std::thread::scope(|s| {
-            let handles: Vec<_> = apps
-                .iter()
-                .map(|app| {
-                    let dev = &dev;
-                    s.spawn(move || match latest_release(&app.repo) {
-                        Ok(r) => ReleaseInfo {
-                            id: app.id.clone(),
-                            builds: builds_for(&r.assets, &dev.os, &dev.arch),
-                            tag: Some(r.tag_name),
-                            error: None,
-                        },
-                        Err(e) => ReleaseInfo { id: app.id.clone(), tag: None, builds: vec![], error: Some(e) },
-                    })
-                })
-                .collect();
-            handles.into_iter().filter_map(|h| h.join().ok()).collect()
-        })
-    })
-    .await
-    .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || check_all(&apps, &dev, unix_now()))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1314,6 +1588,8 @@ struct SettingsView {
     custom_order: bool,
     /// Whether the Internet Archive backup is switched on.
     archive_enabled: bool,
+    /// Whether the internet and GitHub status is shown in the corner.
+    show_status: bool,
     existing_mode: String,
     search_folders: bool,
     /// Whether the launcher will search folders at all under the current choice.
@@ -1337,6 +1613,7 @@ fn settings_view() -> SettingsView {
         first_run: !settings.first_run_done,
         custom_order: !settings.app_order.is_empty(),
         archive_enabled: settings.archive_enabled,
+        show_status: settings.show_status,
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -1473,6 +1750,9 @@ pub fn run() {
             launch_app,
             uninstall_app,
             skip_update,
+            network_status,
+            set_show_status,
+            open_github_status_page,
             archive_list,
             archive_download,
             set_archive_enabled,
@@ -1806,6 +2086,205 @@ mod tests {
         }
     }
 
+    // ---------- is an app's source still there? ----------
+
+    const DAY: u64 = 24 * 3600;
+
+    #[test]
+    fn an_app_is_only_declared_gone_after_patient_evidence() {
+        let none = Health::default();
+        // Healthy and "no release yet" clear everything.
+        assert_eq!(assess(&Health { unreachable_since: Some(5), missing_since: Some(5) }, Outcome::Fine, true, 100), (Source::Ok, none.clone()));
+        assert_eq!(assess(&none, Outcome::NoRelease, true, 100), (Source::NoRelease, none.clone()));
+        // A rate limit means GitHub is up: nothing changes.
+        let prev = Health { unreachable_since: Some(7), missing_since: None };
+        assert_eq!(assess(&prev, Outcome::RateLimited, true, 100), (Source::Ok, prev.clone()));
+
+        // The user's own internet down: never trouble, never gone, and the clock does not move.
+        assert_eq!(assess(&none, Outcome::Unreachable, false, 100), (Source::Offline, none.clone()));
+        assert_eq!(assess(&prev, Outcome::Unreachable, false, 100 + 90 * DAY), (Source::Offline, prev.clone()));
+
+        // GitHub failing while the internet works: trouble first, gone only after a full week.
+        let t0 = 1_000_000;
+        let (state, h) = assess(&none, Outcome::Unreachable, true, t0);
+        assert_eq!((state, h.unreachable_since), (Source::Trouble, Some(t0)));
+        assert_eq!(assess(&h, Outcome::Unreachable, true, t0 + 6 * DAY + 3600).0, Source::Trouble);
+        assert_eq!(assess(&h, Outcome::Unreachable, true, t0 + 7 * DAY).0, Source::Gone);
+        // Time spent offline in between does not count toward the week.
+        let (_, still) = assess(&h, Outcome::Unreachable, false, t0 + 5 * DAY);
+        assert_eq!(still, h);
+        // Recovery clears it.
+        assert_eq!(assess(&h, Outcome::Fine, true, t0 + 8 * DAY), (Source::Ok, none.clone()));
+
+        // A repository reported missing: confirmed only by a second report at least a day later.
+        let (state, h) = assess(&none, Outcome::Gone, true, t0);
+        assert_eq!((state, h.missing_since), (Source::Trouble, Some(t0)));
+        assert_eq!(assess(&h, Outcome::Gone, true, t0 + 3600).0, Source::Trouble);
+        assert_eq!(assess(&h, Outcome::Gone, true, t0 + DAY).0, Source::Gone);
+        assert_eq!(assess(&h, Outcome::Fine, true, t0 + 2 * DAY).0, Source::Ok);
+    }
+
+    fn release_json() -> Vec<u8> {
+        br#"{"tag_name":"v1.0.0","assets":[]}"#.to_vec()
+    }
+
+    #[test]
+    fn checks_follow_the_patient_rules_against_a_fake_github() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-source-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        // The user's internet "works" (a listener we keep open); the status page is unreachable.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        std::env::set_var("HOPPER_PROBE_ADDRS", listener.local_addr().unwrap().to_string());
+        std::env::set_var("HOPPER_STATUS_URL", "http://127.0.0.1:1/none");
+
+        let status = |code: &str| format!("__STATUS__:{code}").into_bytes();
+        {
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/ok/releases/latest".into(), release_json());
+            r.insert("/repos/me/norelease/releases/latest".into(), status("404"));
+            r.insert("/repos/me/norelease".into(), b"{}".to_vec());
+            r.insert("/repos/me/missing/releases/latest".into(), status("404"));
+            r.insert("/repos/me/missing".into(), status("404"));
+            r.insert("/repos/me/blocked/releases/latest".into(), status("451"));
+            r.insert("/repos/me/limited/releases/latest".into(), status("429"));
+            r.insert("/repos/me/broken/releases/latest".into(), status("503"));
+            r.insert("/repos/me/denied/releases/latest".into(), status("403"));
+        }
+        let apps: Vec<AppEntry> = ["ok", "norelease", "missing", "blocked", "limited", "broken", "denied"]
+            .iter()
+            .map(|n| AppEntry { repo: format!("me/{n}"), ..entry(n, n) })
+            .collect();
+        let dev = device::Device { os: "linux".into(), arch: "x86_64".into(), ram_gb: None, gpus: vec![] };
+        let src = |infos: &[ReleaseInfo], id: &str| infos.iter().find(|i| i.id == id).unwrap().source;
+
+        let t0 = 1_000_000;
+        let first = check_all(&apps, &dev, t0);
+        assert_eq!(src(&first, "ok"), Source::Ok);
+        assert_eq!(src(&first, "norelease"), Source::NoRelease);
+        assert_eq!(src(&first, "missing"), Source::Trouble, "one report is not enough");
+        assert_eq!(src(&first, "blocked"), Source::Trouble);
+        assert_eq!(src(&first, "limited"), Source::Ok);
+        assert!(first.iter().find(|i| i.id == "limited").unwrap().error.as_deref().unwrap().contains("rate limit"));
+        assert_eq!(src(&first, "broken"), Source::Trouble);
+        // a plain 403 (no rate-limit headers) is "could not get through", not "rate limited"
+        assert_eq!(src(&first, "denied"), Source::Trouble);
+        assert!(!first.iter().find(|i| i.id == "denied").unwrap().error.as_deref().unwrap().contains("rate limit"));
+        assert_eq!(first.iter().find(|i| i.id == "broken").unwrap().error.as_deref(), Some("Can't reach GitHub right now"));
+        assert_eq!(first.iter().find(|i| i.id == "ok").unwrap().tag.as_deref(), Some("v1.0.0"));
+
+        let day2 = check_all(&apps, &dev, t0 + DAY + 3600);
+        assert_eq!(src(&day2, "missing"), Source::Gone, "reported twice, a day apart");
+        assert_eq!(src(&day2, "blocked"), Source::Gone);
+        assert_eq!(src(&day2, "broken"), Source::Trouble, "GitHub trouble needs a full week");
+        assert_eq!(src(&day2, "ok"), Source::Ok);
+
+        assert_eq!(src(&check_all(&apps, &dev, t0 + 8 * DAY), "broken"), Source::Gone);
+
+        // Everything comes back: the marks are cleared.
+        {
+            let mut r = routes.lock().unwrap();
+            for n in ["missing", "blocked", "broken", "denied"] {
+                r.insert(format!("/repos/me/{n}/releases/latest"), release_json());
+            }
+        }
+        let back = check_all(&apps, &dev, t0 + 9 * DAY);
+        assert!(back.iter().all(|i| matches!(i.source, Source::Ok | Source::NoRelease)), "{:?}", back.iter().map(|i| i.source).collect::<Vec<_>>());
+        assert_eq!(load_health()["missing"], Health::default());
+
+        // Now the user's internet goes down: GitHub looks unreachable, but nothing is ever marked gone.
+        routes.lock().unwrap().insert("/repos/me/broken/releases/latest".into(), status("503"));
+        std::env::set_var("HOPPER_PROBE_ADDRS", "127.0.0.1:1");
+        let before = load_health()["broken"].clone();
+        for offset in [10, 20, 40, 120] {
+            let offline = check_all(&apps, &dev, t0 + offset * DAY);
+            assert_eq!(src(&offline, "broken"), Source::Offline, "day {offset}");
+        }
+        assert_eq!(load_health()["broken"], before, "being offline must not start any clock");
+
+        for k in ["HOPPER_API_BASE", "HOPPER_PROBE_ADDRS", "HOPPER_STATUS_URL"] {
+            std::env::remove_var(k);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_server_that_never_answers_is_given_up_on_instead_of_hanging() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // Accepts connections and then says nothing, like a network that swallows the request.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming().flatten() {
+                held.push(stream);
+            }
+        });
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        std::env::set_var("HOPPER_READ_TIMEOUT_SECS", "1");
+        let started = std::time::Instant::now();
+        let result = latest_release_typed("me/hangs");
+        let took = started.elapsed();
+        std::env::remove_var("HOPPER_API_BASE");
+        std::env::remove_var("HOPPER_READ_TIMEOUT_SECS");
+        assert!(matches!(result, Err(SourceError::Unreachable(_))), "{result:?}");
+        assert!(took < std::time::Duration::from_secs(5), "took {took:?}: it hung instead of giving up");
+    }
+
+    #[test]
+    fn the_corner_status_tells_online_from_offline_and_reads_githubs_feed() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-netstatus-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        let (port, routes) = serve();
+        let feed = |indicator: &str, text: &str| format!(r#"{{"status":{{"indicator":"{indicator}","description":"{text}"}}}}"#).into_bytes();
+        std::env::set_var("HOPPER_STATUS_URL", format!("http://127.0.0.1:{port}/status"));
+        std::env::set_var("HOPPER_PROBE_ADDRS", "127.0.0.1:1"); // a closed port: the bare check fails
+
+        // GitHub's own feed answers: online, and its words are passed on.
+        routes.lock().unwrap().insert("/status".into(), feed("none", "All Systems Operational"));
+        let n = check_network();
+        assert_eq!((n.internet.as_str(), n.github.indicator.as_str(), n.github.description.as_str()), ("online", "none", "All Systems Operational"));
+        for level in ["minor", "major", "critical", "maintenance"] {
+            routes.lock().unwrap().insert("/status".into(), feed(level, "x"));
+            assert_eq!(check_network().github.indicator, level);
+        }
+        // A word we do not know is shown as unknown, not trusted.
+        routes.lock().unwrap().insert("/status".into(), feed("sparkly", "x"));
+        assert_eq!(check_network().github.indicator, "unknown");
+
+        // The feed is unreachable and so is everything else: offline.
+        std::env::set_var("HOPPER_STATUS_URL", "http://127.0.0.1:1/status");
+        let off = check_network();
+        assert_eq!((off.internet.as_str(), off.github.indicator.as_str(), off.github.description.as_str()), ("offline", "unknown", "No internet connection"));
+        assert!(!internet_works());
+
+        // The feed is unreachable but the internet works (the bare check succeeds): online, GitHub unknown.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        std::env::set_var("HOPPER_PROBE_ADDRS", listener.local_addr().unwrap().to_string());
+        let n = check_network();
+        assert_eq!((n.internet.as_str(), n.github.indicator.as_str()), ("online", "unknown"));
+        assert!(internet_works());
+
+        // With the indicator switched off, the status page is never asked, even to check the internet.
+        routes.lock().unwrap().insert("/status".into(), feed("none", "All Systems Operational"));
+        std::env::set_var("HOPPER_STATUS_URL", format!("http://127.0.0.1:{port}/status"));
+        std::env::set_var("HOPPER_PROBE_ADDRS", "127.0.0.1:1");
+        assert!(internet_works(), "status page answers while the indicator is on");
+        set_show_status(false).unwrap();
+        assert!(!internet_works(), "indicator off: only the bare check is used");
+        assert!(Settings::default().show_status, "the indicator is on by default");
+
+        for k in ["HOPPER_STATUS_URL", "HOPPER_PROBE_ADDRS"] {
+            std::env::remove_var(k);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn reads_versions_from_file_names() {
         assert_eq!(version_from_name("HopCast-release-0.1.14-x86_64.AppImage"), Some("0.1.14".into()));
@@ -1980,6 +2459,10 @@ mod tests {
                     }
                     let mut s = stream;
                     match routes.lock().unwrap().get(&path) {
+                        Some(body) if body.starts_with(b"__STATUS__:") => {
+                            let code = String::from_utf8_lossy(&body[11..]).trim().to_string();
+                            let _ = write!(s, "HTTP/1.1 {code} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
                         Some(body) => {
                             let etag = format!("\"{}\"", &to_hex(&Sha256::digest(body))[..16]);
                             if if_none_match.as_deref() == Some(etag.to_lowercase().as_str()) {

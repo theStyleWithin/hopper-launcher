@@ -79,6 +79,29 @@ crash on start (sudo make music and Alias Maker did exactly this). So the launch
 only what points into its own AppImage, keeps everything that came from the system, and
 does the same before opening a web link. When the launcher is not an AppImage, nothing is changed.
 
+## Offline, status and apps that can no longer be delivered
+**Nothing needs the internet.** Installed apps launch, settings and ordering work, and the interface never waits
+on a network call. Every web request gives up after 10 seconds, so a connection that goes nowhere can't freeze
+anything. Being offline only changes wording ("You're offline") and turns the corner indicator grey.
+
+**Status in the corner** (a switch in Settings, on by default): two small pills at the top right, "Internet" and
+"GitHub". GitHub's state comes from its public status page feed (`githubstatus.com`, indicator none / minor /
+major / critical / maintenance); clicking the pill opens that page. If the feed can't be read, a bare connection to
+a public DNS server (nothing sent) tells "offline" from "online but the status page is unreachable". The same check
+is used, only when GitHub failed to answer, to tell the user's own internet from GitHub trouble.
+
+**When an app's source disappears.** Each check is classified: working, no release yet (the repo exists), offline,
+trouble, or gone. "Not found" is split into "no release yet" and "no such repository" by asking GitHub about the
+repository itself. An app is **gone** only after patient evidence: the repository reported missing (404 or 451)
+twice at least a day apart, or GitHub unreachable for 7 days in a row *while the user's internet works*. Time spent
+offline never counts, a rate limit (real ones are recognised by GitHub's headers) changes nothing, and any success
+clears the marks. What the user sees:
+- An app that is **not installed** and gone is replaced, in the same slot, by a dashed tile: "I'm sorry, Dave. I can't help you."
+- An app that **is installed** is never hidden: it keeps its tile and Launch button and shows "v1.2.3 · can't update".
+- The count line says "Offline · what you already have still works" when offline.
+- The Internet Archive list is unaffected, so it can still offer older versions if the user turned it on.
+The marks live in `health.json` in the launcher's data folder.
+
 ## Internet Archive backup
 A manual safety net for the day a repository is taken down, or GitHub is unavailable for a while or for good.
 Older versions of each app are preserved on the Internet Archive (one item per app, named in `apps.json`

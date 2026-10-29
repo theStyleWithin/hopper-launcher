@@ -43,6 +43,10 @@ function renderSummary() {
     $("devnote").textContent = "";
     return;
   }
+  if (lastNetwork?.internet === "offline") {
+    $("devnote").textContent = "Offline · what you already have still works";
+    return;
+  }
   const n = apps.filter((a) => (releases[a.id]?.builds || []).length || a.installed).length;
   $("devnote").textContent = n + " of " + apps.length + " apps have a build for this device";
 }
@@ -66,8 +70,19 @@ function updatePrompt(app) {
   return updateAvailable(app) && !updateSkipped(app);
 }
 
+/** In the slot of an app that can no longer be fetched (and is not installed): a short message instead. */
+function goneTile(app) {
+  const t = el("section", { className: "tile gone off" }, el("p", { textContent: "I'm sorry, Dave. I can't help you." }));
+  t.dataset.id = app.id;
+  t.title = `${app.name} is no longer available`;
+  t.setAttribute("aria-label", `${app.name} is no longer available. I'm sorry, Dave. I can't help you.`);
+  return t;
+}
+
 function tile(app) {
   const rel = releases[app.id];
+  // Only an app the user does NOT have is replaced. An installed app always keeps its tile and Launch button.
+  if (rel?.source === "gone" && !app.installed) return goneTile(app);
   const working = busy.has(app.id);
   const os = OS_NAME[device.os] || device.os;
   const builds = rel?.builds || [];
@@ -118,7 +133,11 @@ function tile(app) {
       sel.disabled = working;
       btns.append(button("Launch", "go", () => launch(app), working));
     } else {
-      sel.add(new Option(prompt ? `Update available · ${latest}` : mine + ver));
+      // If the source is gone or failing, say so quietly: the app still launches, it just cannot update.
+      const noUpdates = rel && (rel.source === "gone" || rel.source === "trouble");
+      const label = noUpdates ? `${app.version || mine} · can't update` : mine + ver;
+      sel.add(new Option(prompt ? `Update available · ${latest}` : label));
+      if (noUpdates) sel.title = "This app's source is not available right now, so it can't be updated. It still launches.";
       sel.disabled = true;
       btns.append(button("Launch", "go", () => launch(app), working));
     }
@@ -128,7 +147,8 @@ function tile(app) {
     btns.append(button(working ? "Installing…" : "Install", "go", () => install(app, sel.value), working));
   } else {
     t.classList.add("off");
-    sel.add(new Option(rel?.error ? rel.error : rel ? `No ${os} build yet` : "Checking GitHub…"));
+    const why = rel?.source === "offline" ? "You're offline" : rel?.source === "trouble" ? "Can't reach GitHub right now" : rel?.error;
+    sel.add(new Option(why ? why : rel ? `No ${os} build yet` : "Checking GitHub…"));
     sel.disabled = true;
     btns.append(button(rel ? "Unavailable" : "Please wait", "go", null, true));
   }
@@ -199,6 +219,40 @@ async function uninstall(app) {
   renderSettings();
 }
 
+let lastNetwork = null; // what the corner indicator last learned: { internet, github }
+
+const GH_LABEL = { none: ["ok", "operational"], minor: ["warn", "minor issues"], major: ["bad", "outage"], critical: ["bad", "outage"], maintenance: ["warn", "maintenance"], unknown: ["off", "unknown"] };
+
+/** Look at the internet and GitHub's status. Nothing waits for this and nothing needs it to succeed. */
+async function updateStatus() {
+  try {
+    lastNetwork = await invoke("network_status");
+  } catch (e) {
+    lastNetwork = null;
+  }
+  renderStatus();
+}
+
+function renderStatus() {
+  const box = $("netstatus");
+  const n = lastNetwork;
+  if (!n || n.internet === "off") { box.hidden = true; return; }
+  box.hidden = false;
+  const net = $("pill-net"), gh = $("pill-gh");
+  const online = n.internet === "online";
+  net.className = "pill " + (online ? "ok" : "off");
+  net.querySelector("b").textContent = online ? "Internet: online" : "Internet: offline";
+  net.title = online ? "Your internet connection works." : "No internet connection. Everything you already have still works.";
+  const [tone, word] = GH_LABEL[n.github.indicator] || GH_LABEL.unknown;
+  gh.className = "pill " + tone;
+  gh.querySelector("b").textContent = "GitHub: " + word;
+  gh.title = (n.github.description || "GitHub's status") + " (click to open githubstatus.com)";
+}
+$("pill-gh").onclick = (e) => { e.preventDefault(); invoke("open_github_status_page").catch((err) => say(String(err), true)); };
+window.addEventListener("online", updateStatus);
+window.addEventListener("offline", updateStatus);
+setInterval(updateStatus, 5 * 60 * 1000); // a quick look every five minutes while open
+
 const CHECK_EVERY = 3 * 60 * 60 * 1000; // look for new releases every 3 hours while the launcher is open
 let lastCheck = Date.now();
 
@@ -208,11 +262,13 @@ async function refresh() {
   releases = {};
   render();
   say("Checking GitHub…");
+  updateStatus(); // runs alongside; the tiles do not wait for it
   try {
     (await invoke("check_releases")).forEach((r) => (releases[r.id] = r));
     const updates = apps.filter(updatePrompt).length;
     const failed = Object.values(releases).filter((r) => r.error && r.error !== "No release published yet").length;
-    say(failed ? "Some apps could not be checked. Are you online?" : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date", !!failed);
+    const offline = lastNetwork?.internet === "offline";
+    say(offline ? "You're offline. Everything you already have still works." : failed ? "Some apps could not be checked right now." : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date", !!failed);
   } catch (e) {
     say(String(e), true);
   } finally {
@@ -292,6 +348,7 @@ $("grid").addEventListener("pointerdown", (e) => {
 async function quietCheck() {
   if (!device || busy.size || Date.now() - lastCheck < CHECK_EVERY) return;
   lastCheck = Date.now();
+  updateStatus();
   const before = Object.fromEntries(Object.entries(releases).map(([id, r]) => [id, r.tag]));
   try {
     (await invoke("check_releases")).forEach((r) => {
@@ -354,9 +411,14 @@ async function loadArchive() {
   try {
     archiveState.items = await invoke("archive_list");
   } catch (e) {
-    archiveState.error = String(e);
+    archiveState.error = friendlyArchive(String(e));
   }
   renderArchive();
+}
+
+/** "Could not reach" almost always means the user is offline, and that is not a problem. */
+function friendlyArchive(message) {
+  return /could not reach/i.test(message) ? "Can't reach the Internet Archive right now (are you offline?). Everything else still works." : message;
 }
 
 function archiveVisible(file, item) {
@@ -406,7 +468,7 @@ function renderArchive() {
   if (s.items === null && !s.error) {
     list.append(el("div", { className: "note", textContent: "Asking the Internet Archive…" }));
   } else if (s.error) {
-    list.append(el("div", { className: "note", textContent: s.error }));
+    list.append(el("div", { className: "note", textContent: friendlyArchive(s.error) }));
   } else {
     s.items.forEach((item) => {
       total += item.files.length;
@@ -414,7 +476,7 @@ function renderArchive() {
       const files = item.files.filter((f) => archiveVisible(f, item));
       shown += files.length;
       list.append(el("div", { className: "grp" }, document.createTextNode(item.app_name), el("span", { textContent: item.error ? "" : `${files.length} file${files.length === 1 ? "" : "s"}` })));
-      if (item.error) list.append(el("div", { className: "note", textContent: item.error }));
+      if (item.error) list.append(el("div", { className: "note", textContent: friendlyArchive(item.error) }));
       else if (!files.length) list.append(el("div", { className: "note", textContent: item.files.length ? "Nothing matches these filters." : "No files uploaded yet." }));
       files.forEach((f) => list.append(archiveRow(item, f)));
     });
@@ -583,6 +645,16 @@ function renderSettings() {
     sheet.append(fr);
   }
 
+  sheet.append(el("h3", { textContent: "Status in the corner" }));
+  const statusBox = el("input", { type: "checkbox", checked: settings.show_status });
+  statusBox.onchange = async () => {
+    try { settings = await invoke("set_show_status", { enabled: statusBox.checked }); } catch (e) { say(String(e), true); }
+    if (settings.show_status) updateStatus(); else { lastNetwork = null; renderStatus(); }
+    renderSettings();
+  };
+  sheet.append(el("label", { className: "choice" }, statusBox, el("b", { textContent: "Show whether you are online and whether GitHub is working" }),
+    el("span", { textContent: "On by default. A small indicator in the bottom corner. It reads GitHub's own status page (githubstatus.com). Nothing in the launcher needs the internet, so being offline only turns the indicator grey." })));
+
   sheet.append(el("h3", { textContent: "Internet Archive backup" }));
   const archiveBox = el("input", { type: "checkbox", checked: settings.archive_enabled });
   archiveBox.onchange = async () => {
@@ -705,6 +777,7 @@ setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but onl
     settings = await invoke("get_settings");
     await loadApps();
     applyArchive();
+    updateStatus();
     if (settings.first_run && device.os !== "android") openSettings(true);
     await refresh();
   } catch (e) {

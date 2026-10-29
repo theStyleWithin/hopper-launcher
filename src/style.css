@@ -190,3 +190,16 @@ label.sub { font-size: 14px; color: var(--dim); }
 @media (max-width: 880px) { .layout.with-archive > .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .layout.with-archive > .grid { grid-template-columns: minmax(0, 1fr); } }
 .archive .status { padding: 10px 20px; font-size: 12px; line-height: 16px; border-bottom: 1px solid var(--line); background: var(--panel-hi); word-break: break-all; max-height: 64px; overflow: hidden; }
+
+/* Corner status: two small pills, always out of the way */
+.netstatus { position: fixed; right: 16px; top: 6px; display: flex; gap: 8px; z-index: 5; }
+.pill { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; color: var(--dim); font-size: 12px; line-height: 16px; text-decoration: none; }
+.pill b { font-weight: 400; }
+.pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
+.pill.ok i { background: var(--ok); } .pill.warn i { background: var(--warn); } .pill.bad i { background: #ff6b6b; }
+a.pill:hover, a.pill:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
+@media (max-width: 560px) { .netstatus { left: 16px; justify-content: flex-end; } }
+
+/* An app that can no longer be delivered: a quiet message in its slot */
+.tile.gone { justify-content: center; align-items: center; text-align: center; border-style: dashed; background: transparent; color: var(--dim); font-size: 16px; line-height: 24px; }
+.tile.gone p { max-width: 20ch; }
