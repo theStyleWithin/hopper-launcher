@@ -43,6 +43,10 @@ update is available.
 
 *Each tile shows how many times that app has been downloaded in total, across every version and every system, taken from GitHub's own public numbers. (These pictures use sample numbers.)*
 
+![The launcher with the user's own picture as the background, dimmed so the solid tiles stay easy to read.](docs/images/custom-background.png)
+
+*Your own picture as the background (Settings, Background). The tiles stay solid so everything stays readable, and Dim and Blur sliders let you choose how much of the picture shows. (This is a sample picture.)*
+
 ![The launcher with no internet: the installed apps still show Launch, and the corner says offline.](docs/images/offline.png)
 
 *With no internet, nothing you already have stops working. The corner turns grey and the rest says so plainly.*
@@ -107,6 +111,10 @@ page says which systems it supports, and the launcher only shows the builds that
   checked against the archive's checksums (and the developer's `SHA256SUMS` when one is there). The launcher
   only contacts archive.org while this is switched on, and it never switches to it by itself.
 - Launched apps run on their own, so closing the launcher never closes them.
+- **Your own background.** In Settings, "Choose an image…" lets you use your own PNG, JPEG or WebP picture
+  (under 12 MB) behind the apps. A copy is kept inside the launcher, so it keeps working if the original is
+  moved or deleted, and nothing is sent anywhere. The tiles stay solid so text stays readable; Dim and Blur
+  sliders and a Remove button put you in control. Still pictures only (no animations or SVG). Desktop for now.
 - **Download counts.** A small green number on each tile shows how many times that app has been downloaded,
   added up across every version and every system (Linux, Windows and Android all count toward one total). It
   uses GitHub's own public download numbers, so nothing is sent and nobody is identified. Checksum, debug and

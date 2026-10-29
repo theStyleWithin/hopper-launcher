@@ -380,6 +380,70 @@ async function quietCheck() {
   }
 }
 
+// ---------- background picture ----------
+
+let wallpaperUrl = null;
+let bgMessage = ""; // shown inside Settings, where the user is looking
+
+function setWallpaperLook(dim, blur) {
+  root.style.setProperty("--bg-dim", String(dim / 100));
+  root.style.setProperty("--bg-blur", blur + "px");
+}
+
+/** Show (or remove) the user's own picture behind everything. Desktop only for now. */
+async function applyWallpaper() {
+  const layer = $("wallpaper");
+  if (!settings?.bg_has || device?.os === "android") {
+    layer.classList.remove("on");
+    layer.style.backgroundImage = "";
+    if (wallpaperUrl) { URL.revokeObjectURL(wallpaperUrl); wallpaperUrl = null; }
+    return;
+  }
+  try {
+    const bytes = await invoke("read_background"); // raw bytes, so even a big picture stays quick
+    const url = URL.createObjectURL(new Blob([bytes], { type: settings.bg_mime || "image/png" }));
+    if (wallpaperUrl) URL.revokeObjectURL(wallpaperUrl);
+    wallpaperUrl = url;
+    layer.style.backgroundImage = `url("${url}")`;
+    setWallpaperLook(settings.bg_dim, settings.bg_blur);
+    layer.classList.add("on");
+  } catch (e) {
+    layer.classList.remove("on");
+    bgMessage = String(e);
+  }
+}
+
+async function chooseBackground() {
+  const path = await window.__TAURI__.dialog.open({
+    multiple: false, directory: false, title: "Choose a background picture",
+    filters: [{ name: "Pictures", extensions: ["png", "jpg", "jpeg", "webp"] }],
+  });
+  if (!path) return;
+  try {
+    settings = await invoke("set_background", { path });
+    bgMessage = "";
+    await applyWallpaper();
+  } catch (e) {
+    bgMessage = String(e); // for example "That picture is 20 MB. Please choose one under 12 MB."
+  }
+  renderSettings();
+}
+
+async function removeBackground() {
+  try { settings = await invoke("clear_background"); bgMessage = ""; } catch (e) { bgMessage = String(e); }
+  await applyWallpaper();
+  renderSettings();
+}
+
+function slider(label, max, value, unit, onLive, onSave) {
+  const out = el("span", { textContent: value + unit });
+  const input = el("input", { type: "range", min: 0, max, step: 1, value });
+  input.setAttribute("aria-label", label);
+  input.oninput = () => { out.textContent = input.value + unit; onLive(+input.value); }; // moves live
+  input.onchange = () => onSave(+input.value);                                           // saved when let go
+  return el("label", { className: "range" }, el("span", { textContent: label }), input, out);
+}
+
 // ---------- Internet Archive backup ----------
 
 const archiveState = { items: null, error: null, app: "all", system: "mine", search: "", extras: false, note: "", noteIsError: false };
@@ -663,6 +727,22 @@ function renderSettings() {
     sheet.append(fr);
   }
 
+  if (!phone) {
+    sheet.append(el("h3", { textContent: "Background" }));
+    sheet.append(el("p", { textContent: settings.bg_has
+      ? "Showing your own picture behind the apps. The tiles stay solid so everything stays easy to read."
+      : "No picture chosen, so the plain theme background is used. You can use your own PNG, JPEG or WebP picture (under 12 MB). A copy is kept inside the launcher, so it keeps working if the original moves." }));
+    const row = el("div", { className: "bgrow" }, button(settings.bg_has ? "Choose a different image…" : "Choose an image…", "ghost", chooseBackground));
+    if (settings.bg_has) row.append(button("Remove", "ghost", removeBackground));
+    sheet.append(row);
+    if (bgMessage) sheet.append(el("p", { className: "bgwarn", textContent: bgMessage }));
+    if (settings.bg_has) {
+      const save = async (dim, blur) => { try { settings = await invoke("set_background_look", { dim, blur }); } catch (e) { bgMessage = String(e); } };
+      sheet.append(slider("Dim", 90, settings.bg_dim, "%", (v) => setWallpaperLook(v, settings.bg_blur), (v) => save(v, settings.bg_blur)));
+      sheet.append(slider("Blur", 20, settings.bg_blur, " px", (v) => setWallpaperLook(settings.bg_dim, v), (v) => save(settings.bg_dim, v)));
+    }
+  }
+
   sheet.append(el("h3", { textContent: "Download counts" }));
   const countBox = el("input", { type: "checkbox", checked: settings.show_downloads });
   countBox.onchange = async () => {
@@ -681,7 +761,7 @@ function renderSettings() {
     renderSettings();
   };
   sheet.append(el("label", { className: "choice" }, statusBox, el("b", { textContent: "Show whether you are online and whether GitHub is working" }),
-    el("span", { textContent: "On by default. A small indicator in the bottom corner. It reads GitHub's own status page (githubstatus.com). Nothing in the launcher needs the internet, so being offline only turns the indicator grey." })));
+    el("span", { textContent: "On by default. Two small indicators in the top-right corner. It reads GitHub's own status page (githubstatus.com). Nothing in the launcher needs the internet, so being offline only turns the indicator grey." })));
 
   sheet.append(el("h3", { textContent: "Internet Archive backup" }));
   const archiveBox = el("input", { type: "checkbox", checked: settings.archive_enabled });
@@ -805,6 +885,7 @@ setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but onl
     settings = await invoke("get_settings");
     await loadApps();
     applyArchive();
+    applyWallpaper();
     updateStatus();
     if (settings.first_run && device.os !== "android") openSettings(true);
     await refresh();

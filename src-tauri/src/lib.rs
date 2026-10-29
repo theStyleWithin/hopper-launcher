@@ -460,6 +460,104 @@ fn open_github_status_page() -> Result<(), String> {
     open_with_system(GITHUB_STATUS_PAGE)
 }
 
+// ---------- background picture ----------
+//
+// The user may choose their own picture. It is checked by what is really inside the file (a PNG, JPEG or
+// WebP, not an SVG or anything else), kept to a sensible size, and copied into the launcher's own folder so
+// it keeps working if the original moves. Only still pictures. Nothing is sent anywhere.
+
+const MAX_BACKGROUND_BYTES: u64 = 12 * 1024 * 1024;
+const BACKGROUND_NAMES: [(&str, &str); 3] = [("background.png", "image/png"), ("background.jpg", "image/jpeg"), ("background.webp", "image/webp")];
+
+fn background_dir() -> PathBuf {
+    data_dir().join("background")
+}
+
+fn background_mime(name: &str) -> Option<&'static str> {
+    BACKGROUND_NAMES.iter().find(|(n, _)| *n == name).map(|(_, m)| *m)
+}
+
+/// What a picture really is, judged by its first bytes. Returns the file name to keep it under.
+fn image_kind(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("background.png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("background.jpg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("background.webp")
+    } else {
+        None
+    }
+}
+
+fn set_background_from(path: &Path) -> Result<(), String> {
+    let meta = fs::metadata(path).map_err(|e| format!("Could not read that file: {e}"))?;
+    if !meta.is_file() {
+        return Err("That is not a file.".into());
+    }
+    if meta.len() > MAX_BACKGROUND_BYTES {
+        return Err(format!("That picture is {} MB. Please choose one under 12 MB.", meta.len() / (1024 * 1024)));
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Could not read that file: {e}"))?;
+    let name = image_kind(&bytes).ok_or_else(|| "That does not look like a PNG, JPEG or WebP picture.".to_string())?;
+    let dir = background_dir();
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for (old, _) in BACKGROUND_NAMES {
+        let _ = fs::remove_file(dir.join(old)); // only one picture is ever kept
+    }
+    fs::write(dir.join(name), &bytes).map_err(|e| e.to_string())?;
+    let mut settings = load_settings();
+    settings.bg_file = Some(name.to_string());
+    save_settings(&settings)
+}
+
+fn clear_background_files() -> Result<(), String> {
+    let dir = background_dir();
+    for (old, _) in BACKGROUND_NAMES {
+        let _ = fs::remove_file(dir.join(old));
+    }
+    let mut settings = load_settings();
+    settings.bg_file = None;
+    save_settings(&settings)
+}
+
+/// The kept picture's bytes. The name comes from settings.json, so it is checked against the three allowed
+/// names before it is ever used as a path.
+fn read_background_bytes() -> Result<Vec<u8>, String> {
+    let name = load_settings().bg_file.ok_or_else(|| "No background picture is set.".to_string())?;
+    if background_mime(&name).is_none() {
+        return Err("The saved background name is not valid.".into());
+    }
+    fs::read(background_dir().join(name)).map_err(|e| format!("Could not read the background picture: {e}"))
+}
+
+#[tauri::command]
+fn set_background(path: String) -> Result<SettingsView, String> {
+    set_background_from(Path::new(&path))?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn clear_background() -> Result<SettingsView, String> {
+    clear_background_files()?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn set_background_look(dim: u8, blur: u8) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.bg_dim = dim.min(90);
+    settings.bg_blur = blur.min(20);
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+/// The picture itself, as raw bytes (no text encoding, so a large picture stays fast).
+#[tauri::command]
+fn read_background() -> Result<tauri::ipc::Response, String> {
+    read_background_bytes().map(tauri::ipc::Response::new)
+}
+
 // ---------- download totals ----------
 //
 // GitHub counts, publicly, how many times each file of a release was downloaded. The total for an app
@@ -935,6 +1033,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_dim() -> u8 {
+    55
+}
+
 /// How the launcher treats apps the user installed before the launcher existed.
 ///   "auto"     search the usual folders and ask before using each find
 ///   "manual"   never search; the user points at each app in Settings
@@ -963,11 +1065,20 @@ struct Settings {
     /// Show each app's download total on its tile. On unless the user turns it off.
     #[serde(default = "default_true")]
     show_downloads: bool,
+    /// The user's own background picture (a file in the launcher's own folder), if any.
+    #[serde(default)]
+    bg_file: Option<String>,
+    /// How much the picture is dimmed, 0 to 90 (percent).
+    #[serde(default = "default_dim")]
+    bg_dim: u8,
+    /// How much the picture is blurred, 0 to 20 (pixels).
+    #[serde(default)]
+    bg_blur: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true, show_downloads: true }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true, show_downloads: true, bg_file: None, bg_dim: default_dim(), bg_blur: 0 }
     }
 }
 
@@ -1742,6 +1853,11 @@ struct SettingsView {
     show_status: bool,
     /// Whether each app's download total is shown on its tile.
     show_downloads: bool,
+    /// Whether the user has chosen a background picture, its type, and how it is dimmed and blurred.
+    bg_has: bool,
+    bg_mime: Option<String>,
+    bg_dim: u8,
+    bg_blur: u8,
     existing_mode: String,
     search_folders: bool,
     /// Whether the launcher will search folders at all under the current choice.
@@ -1767,6 +1883,10 @@ fn settings_view() -> SettingsView {
         archive_enabled: settings.archive_enabled,
         show_status: settings.show_status,
         show_downloads: settings.show_downloads,
+        bg_has: settings.bg_file.is_some(),
+        bg_mime: settings.bg_file.as_deref().and_then(background_mime).map(str::to_string),
+        bg_dim: settings.bg_dim.min(90),
+        bg_blur: settings.bg_blur.min(20),
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -1906,6 +2026,10 @@ pub fn run() {
             network_status,
             set_show_status,
             set_show_downloads,
+            set_background,
+            clear_background,
+            set_background_look,
+            read_background,
             open_github_status_page,
             archive_list,
             archive_download,
@@ -2556,6 +2680,96 @@ mod tests {
         if let Ok(expected) = std::env::var("HOPPER_EXPECTED_TOTAL") {
             assert_eq!(total.to_string(), expected);
         }
+    }
+
+    // ---------- background picture ----------
+
+    fn fake_png() -> Vec<u8> {
+        let mut b = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        b.extend_from_slice(b"pretend image data");
+        b
+    }
+
+    #[test]
+    fn a_background_picture_is_checked_by_what_it_really_is_and_copied_safely() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-bg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("in")).unwrap();
+        std::env::set_var("HOPPER_DATA_DIR", root.join("data"));
+        let put = |name: &str, bytes: &[u8]| {
+            let p = root.join("in").join(name);
+            fs::write(&p, bytes).unwrap();
+            p
+        };
+
+        // By default there is no picture, and the look is sensible.
+        let v = settings_view();
+        assert_eq!((v.bg_has, v.bg_dim, v.bg_blur), (false, 55, 0));
+        assert!(read_background_bytes().is_err());
+
+        // What is inside decides, not the name: a text file called .png is refused, and so is an SVG.
+        assert!(set_background_from(&put("fake.png", b"just some words")).unwrap_err().contains("PNG, JPEG or WebP"));
+        assert!(set_background_from(&put("art.svg", b"<svg xmlns='http://www.w3.org/2000/svg'><script>x</script></svg>")).is_err());
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend_from_slice(&[0; 20]);
+        assert!(set_background_from(&put("anim.gif", &gif)).is_err(), "animated pictures are not accepted");
+        assert!(set_background_from(&root.join("in")).unwrap_err().contains("not a file"));
+        assert!(set_background_from(&root.join("in/missing.png")).is_err());
+        assert!(!settings_view().bg_has, "a refused picture must not be saved");
+
+        // Too big is refused with a plain message.
+        let mut big = fake_png();
+        big.resize((MAX_BACKGROUND_BYTES + 1) as usize, 0);
+        let err = set_background_from(&put("huge.png", &big)).unwrap_err();
+        assert!(err.contains("under 12 MB"), "{err}");
+
+        // A real PNG is accepted, copied into the launcher's own folder, and read back unchanged.
+        let png = fake_png();
+        set_background_from(&put("my wallpaper.png", &png)).unwrap();
+        let v = settings_view();
+        assert_eq!((v.bg_has, v.bg_mime.as_deref()), (true, Some("image/png")));
+        assert!(root.join("data/background/background.png").is_file());
+        assert_eq!(read_background_bytes().unwrap(), png);
+        // The original can now move or vanish: the picture keeps working.
+        fs::remove_file(root.join("in/my wallpaper.png")).unwrap();
+        assert_eq!(read_background_bytes().unwrap(), png);
+
+        // Choosing another one (a different type) replaces it: only one picture is ever kept.
+        let mut jpg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpg.extend_from_slice(b"jpeg-ish");
+        set_background_from(&put("photo.jpeg", &jpg)).unwrap();
+        assert_eq!(settings_view().bg_mime.as_deref(), Some("image/jpeg"));
+        assert!(!root.join("data/background/background.png").exists(), "the old picture was left behind");
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBPVP8 ");
+        set_background_from(&put("pic.webp", &webp)).unwrap();
+        assert_eq!(settings_view().bg_mime.as_deref(), Some("image/webp"));
+        assert_eq!(fs::read_dir(root.join("data/background")).unwrap().count(), 1);
+
+        // Dim and blur are kept within their limits.
+        set_background_look(200, 99).unwrap();
+        let v = settings_view();
+        assert_eq!((v.bg_dim, v.bg_blur), (90, 20));
+        set_background_look(30, 4).unwrap();
+        assert_eq!((settings_view().bg_dim, settings_view().bg_blur), (30, 4));
+
+        // A tampered settings file cannot make the launcher read some other file.
+        let mut st = load_settings();
+        st.bg_file = Some("../../etc/passwd".into());
+        save_settings(&st).unwrap();
+        assert!(read_background_bytes().unwrap_err().contains("not valid"));
+        assert_eq!(settings_view().bg_mime, None);
+
+        // Removing it clears everything.
+        set_background_from(&put("again.png", &png)).unwrap();
+        clear_background_files().unwrap();
+        assert!(!settings_view().bg_has);
+        assert_eq!(fs::read_dir(root.join("data/background")).unwrap().count(), 0);
+        assert!(read_background_bytes().is_err());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

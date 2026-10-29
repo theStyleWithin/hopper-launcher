@@ -79,6 +79,22 @@ crash on start (sudo make music and Alias Maker did exactly this). So the launch
 only what points into its own AppImage, keeps everything that came from the system, and
 does the same before opening a web link. When the launcher is not an AppImage, nothing is changed.
 
+## Custom background
+Settings, "Background": the user picks their own picture; the aim is to use the empty space around the tiles
+without hurting the calm, orderly look.
+- **Accepted pictures.** PNG, JPEG or WebP, judged by what is really inside the file (its first bytes), not its
+  name, so an SVG (which can carry script), a GIF or a text file renamed `.png` is refused with a plain message.
+  Under 12 MB. Still pictures only, so nothing moves on its own.
+- **A copy is kept** in the launcher's folder (`background/`), one picture at a time, so the background survives
+  the original moving. The name is checked against the three allowed names before it is ever used as a path, so
+  a tampered settings file cannot make the launcher read some other file. The picture is sent to the page as raw
+  bytes, so even a large one stays quick. Nothing is uploaded or contacted.
+- **Readability.** The picture sits behind everything. Tiles and panels stay solid. A "veil" of the *theme's own
+  background colour* is laid over the picture, so dimming works on dark and light themes alike. Dim runs 0 to
+  90% (default 55%) and Blur 0 to 20 px (default 0); both move live and are saved when the slider is released.
+  Remove goes back to the plain theme.
+- **Not on Android yet:** the file picker there returns a content address rather than a file path.
+
 ## Download counts
 A neon-green chip on the top edge of each tile ("▼ 3,071"), so no tile changes size. It is one exact total per
 app: the sum of GitHub's public `download_count` over every program file (AppImage, installer, zip, APK, console
