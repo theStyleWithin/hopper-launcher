@@ -91,6 +91,7 @@ Please also scan the file with [VirusTotal](https://www.virustotal.com) first (s
 | HopTunes | A sleek, minimalist media player |
 | sudo make art | Offline, local-only design tool |
 | sudo make music | Offline AI music generation |
+| Desktop College Dorms | Offline AI character creator and chat rooms (in development, no release yet) |
 
 All of them are free to use. The launcher itself collects no data and needs no account. Each app's own
 page says which systems it supports, and the launcher only shows the builds that suit your device.

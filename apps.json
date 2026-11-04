@@ -56,6 +56,17 @@
         "android"
       ],
       "archive": "sudo-make-music"
+    },
+    {
+      "id": "desktop-college-dorms",
+      "name": "Desktop College Dorms",
+      "tagline": "Offline AI character creator and chat rooms",
+      "repo": "theStyleWithin/Desktop-college-dorms",
+      "accent": "#ff9f5a",
+      "untested_on": [
+        "windows",
+        "android"
+      ]
     }
   ]
 }
