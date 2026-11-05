@@ -989,8 +989,12 @@ struct VersionInfo {
 
 /// Every published version that has a build for this device, newest first.
 fn list_versions_blocking(app: &AppEntry) -> Result<Vec<VersionInfo>, String> {
+    list_versions_for(&app.repo)
+}
+
+fn list_versions_for(repo: &str) -> Result<Vec<VersionInfo>, String> {
     let dev = device::detect();
-    let url = format!("{}/repos/{}/releases?per_page=30", api_base(), app.repo);
+    let url = format!("{}/repos/{repo}/releases?per_page=30", api_base());
     let resp = http().get(&url)
         .set("User-Agent", "hopper-launcher")
         .set("Accept", "application/vnd.github+json")
@@ -1838,6 +1842,210 @@ fn skip_entry(app: &AppEntry, tag: &str) -> Result<(), String> {
 }
 
 /// Lists what is preserved on the Internet Archive. Only works while the backup is switched on.
+// ---------- the launcher updating (and rolling back) itself ----------
+
+/// The launcher's own repository (changeable for tests).
+fn self_repo() -> String {
+    std::env::var("HOPPER_SELF_REPO").unwrap_or_else(|_| "theStyleWithin/hopper-launcher".to_string())
+}
+
+fn current_tag() -> String {
+    format!("v{}", env!("CARGO_PKG_VERSION"))
+}
+
+/// The AppImage file this launcher is running from (Linux), if it is one. Tests can point elsewhere.
+fn self_appimage() -> Option<PathBuf> {
+    std::env::var_os("HOPPER_SELF_PATH")
+        .or_else(|| std::env::var_os("APPIMAGE"))
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+}
+
+/// How this launcher can replace itself: "appimage" (swap the file in place), "installer" (hand the new
+/// installer to Windows), or "manual" (open the release page).
+fn self_update_mode() -> &'static str {
+    if cfg!(target_os = "linux") && self_appimage().is_some() {
+        "appimage"
+    } else if cfg!(windows) {
+        "installer"
+    } else {
+        "manual"
+    }
+}
+
+fn newer_than(tag: &str, current: &str) -> bool {
+    let key = |t: &str| -> Vec<u64> { t.trim_start_matches('v').split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect() };
+    key(tag) > key(current)
+}
+
+#[derive(Serialize, Debug)]
+struct LauncherInfo {
+    current: String,
+    mode: &'static str,
+    /// The newest published version, when GitHub answered.
+    latest: Option<String>,
+    newer: bool,
+    builds: Vec<Build>,
+    error: Option<String>,
+}
+
+fn check_launcher_blocking() -> LauncherInfo {
+    let dev = device::detect();
+    let current = current_tag();
+    match latest_release(&self_repo()) {
+        Ok(r) => LauncherInfo {
+            newer: newer_than(&r.tag_name, &current),
+            builds: builds_for(&r.assets, &dev.os, &dev.arch),
+            latest: Some(r.tag_name),
+            current,
+            mode: self_update_mode(),
+            error: None,
+        },
+        Err(e) => LauncherInfo { current, mode: self_update_mode(), latest: None, newer: false, builds: vec![], error: Some(e) },
+    }
+}
+
+#[derive(Serialize, Debug)]
+struct SelfInstallResult {
+    tag: String,
+    verified: bool,
+    /// The new version is in place; restart the launcher to use it.
+    restart: bool,
+    /// The new installer was handed to the system.
+    handed_off: bool,
+}
+
+/// Replaces this launcher with the latest release (`tag` None) or any published version (a rollback).
+fn install_self_blocking(file: &str, tag: Option<&str>) -> Result<SelfInstallResult, String> {
+    let dev = device::detect();
+    let repo = self_repo();
+    let release = match tag {
+        Some(t) => release_by_tag(&repo, t)?,
+        None => latest_release(&repo)?,
+    };
+    let build = builds_for(&release.assets, &dev.os, &dev.arch)
+        .into_iter()
+        .find(|b| b.file == file)
+        .ok_or_else(|| format!("{file} is not a build for this device"))?;
+    let asset = release.assets.iter().find(|a| a.name == file).ok_or_else(|| format!("{file} is missing from the release"))?;
+
+    match self_update_mode() {
+        "appimage" => {
+            if build.kind != "appimage" {
+                return Err("Pick the AppImage build to update the launcher in place.".into());
+            }
+            let target = self_appimage().ok_or("Could not find the launcher's own file")?;
+            let staged = target.with_file_name(format!(".{}.new", target.file_name().and_then(|n| n.to_str()).unwrap_or("launcher")));
+            let discard = |msg: String| -> String {
+                let _ = fs::remove_file(&staged);
+                msg
+            };
+            let actual = download(&asset.browser_download_url, &staged).map_err(&discard)?;
+            let verified = match verify(&release, file, &actual) {
+                Some(true) => true,
+                Some(false) => return Err(discard("The download did not match its published checksum, so it was discarded.".into())),
+                None => false,
+            };
+            make_executable(&staged).map_err(&discard)?;
+            // Same folder, so the swap is a single rename: the running copy is never half-written.
+            fs::rename(&staged, &target).map_err(|e| discard(format!("Could not replace the launcher ({e}). Is its folder read-only?")))?;
+            Ok(SelfInstallResult { tag: release.tag_name, verified, restart: true, handed_off: false })
+        }
+        "installer" => {
+            if !is_handoff(&build.kind) {
+                return Err("Pick the installer build to update the launcher.".into());
+            }
+            let dir = data_dir().join("self-update");
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let path = dir.join(file);
+            let actual = download(&asset.browser_download_url, &path)?;
+            let verified = match verify(&release, file, &actual) {
+                Some(true) => true,
+                Some(false) => {
+                    let _ = fs::remove_dir_all(&dir);
+                    return Err("The download did not match its published checksum, so it was discarded.".into());
+                }
+                None => false,
+            };
+            open_with_system(&path.to_string_lossy())?;
+            Ok(SelfInstallResult { tag: release.tag_name, verified, restart: false, handed_off: true })
+        }
+        _ => Err("This copy of the launcher can't replace itself. Open the release page and download it from there.".into()),
+    }
+}
+
+#[tauri::command]
+async fn check_launcher() -> Result<LauncherInfo, String> {
+    tauri::async_runtime::spawn_blocking(check_launcher_blocking).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn launcher_versions() -> Result<Vec<VersionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(|| list_versions_for(&self_repo())).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn install_launcher(file: String, tag: Option<String>) -> Result<SelfInstallResult, String> {
+    tauri::async_runtime::spawn_blocking(move || install_self_blocking(&file, tag.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn open_launcher_releases() -> Result<(), String> {
+    open_with_system(&format!("https://github.com/{}/releases", self_repo()))
+}
+
+/// Starts the (updated) launcher again and closes this one. Linux AppImage only; elsewhere the user reopens it.
+#[tauri::command]
+fn restart_launcher(app: tauri::AppHandle) -> Result<(), String> {
+    let path = self_appimage().ok_or("This copy can't restart itself. Please open the launcher again.")?;
+    let mut cmd = Command::new(path);
+    scrub_appimage_env(&mut cmd);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    cmd.spawn().map_err(|e| format!("Could not restart: {e}"))?;
+    app.exit(0);
+    Ok(())
+}
+
+// ---------- refreshing the download totals on demand ----------
+
+#[derive(Serialize, Debug)]
+struct FreshCount {
+    id: String,
+    downloads: Option<u64>,
+    at: Option<u64>,
+}
+
+/// Asks GitHub for every app's all-time total right now. An app that can't be reached keeps its last
+/// saved number, so the refresh never blanks anything.
+fn refresh_downloads_blocking(apps: &[AppEntry], now: u64) -> Vec<FreshCount> {
+    let fresh: Vec<(String, Result<u64, SourceError>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = apps.iter().map(|a| s.spawn(move || (a.id.clone(), fetch_download_total(&a.repo)))).collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).collect()
+    });
+    let mut saved = load_counts();
+    for (id, r) in fresh {
+        if let Ok(total) = r {
+            saved.insert(id, SavedCount { downloads: total, at: now });
+        }
+    }
+    save_counts(&saved);
+    apps.iter().map(|a| FreshCount { id: a.id.clone(), downloads: saved.get(&a.id).map(|c| c.downloads), at: saved.get(&a.id).map(|c| c.at) }).collect()
+}
+
+#[tauri::command]
+async fn refresh_downloads() -> Result<Vec<FreshCount>, String> {
+    let apps = load_manifest()?;
+    tauri::async_runtime::spawn_blocking(move || refresh_downloads_blocking(&apps, unix_now())).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn archive_list() -> Result<Vec<ArchiveItem>, String> {
     tauri::async_runtime::spawn_blocking(archive_overview).await.map_err(|e| e.to_string())?
@@ -2115,6 +2323,12 @@ pub fn run() {
             check_releases,
             install_app,
             list_versions,
+            check_launcher,
+            launcher_versions,
+            install_launcher,
+            open_launcher_releases,
+            restart_launcher,
+            refresh_downloads,
             launch_app,
             uninstall_app,
             skip_update,
@@ -2714,6 +2928,86 @@ mod tests {
         assert_eq!(fetch_download_total("me/short").unwrap(), 15);
         assert_eq!(fetch_download_total("me/missing").unwrap_err(), SourceError::Gone);
         std::env::remove_var("HOPPER_API_BASE");
+    }
+
+    #[test]
+    fn refreshing_the_totals_on_demand_updates_them_and_never_blanks_them() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-refresh-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        let list = |n: u64| serde_json::to_vec(&vec![serde_json::json!({"draft": false, "assets": [{"name": "App.AppImage", "download_count": n}]})]).unwrap();
+        routes.lock().unwrap().insert("/repos/me/app/releases?per_page=100&page=1".into(), list(10));
+        let apps = vec![AppEntry { repo: "me/app".into(), ..entry("app", "App") }];
+        let r = refresh_downloads_blocking(&apps, 100);
+        assert_eq!((r[0].downloads, r[0].at), (Some(10), Some(100)));
+        routes.lock().unwrap().insert("/repos/me/app/releases?per_page=100&page=1".into(), list(25));
+        assert_eq!(refresh_downloads_blocking(&apps, 200)[0].downloads, Some(25));
+        routes.lock().unwrap().insert("/repos/me/app/releases?per_page=100&page=1".into(), b"__STATUS__:503".to_vec());
+        let kept = refresh_downloads_blocking(&apps, 300);
+        assert_eq!((kept[0].downloads, kept[0].at), (Some(25), Some(200)), "a failed refresh must keep the last real number");
+        std::env::remove_var("HOPPER_API_BASE");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn version_comparison_for_the_launcher_itself() {
+        assert!(newer_than("v0.4.1", "v0.4.0"));
+        assert!(newer_than("v0.10.0", "v0.9.9"));
+        assert!(newer_than("v1.0.0", "v0.99.0"));
+        assert!(!newer_than("v0.4.0", "v0.4.0"));
+        assert!(!newer_than("v0.3.9", "v0.4.0"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_launcher_replaces_itself_in_place_and_refuses_a_bad_download() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-self-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        std::env::set_var("HOPPER_DATA_DIR", root.join("data"));
+        let me = root.join("Hopper-Launcher-old.AppImage");
+        fs::write(&me, b"old launcher").unwrap();
+        std::env::set_var("HOPPER_SELF_PATH", &me);
+        std::env::set_var("HOPPER_SELF_REPO", "me/app");
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+
+        let new: &[u8] = b"#!/bin/sh\nexit 0\n";
+        publish(port, &routes, "v9.0.0", new, &sha(new));
+        assert_eq!(self_update_mode(), "appimage");
+        let info = check_launcher_blocking();
+        assert_eq!((info.latest.as_deref(), info.newer), (Some("v9.0.0"), true));
+        assert_eq!(info.builds.iter().map(|b| b.file.as_str()).collect::<Vec<_>>(), vec!["App-x86_64.AppImage"]);
+
+        // A download that does not match its checksum leaves the running launcher untouched.
+        publish(port, &routes, "v9.0.0", b"#!/bin/sh\necho evil\n", &sha(new));
+        let err = install_self_blocking("App-x86_64.AppImage", None).unwrap_err();
+        assert!(err.contains("checksum"), "{err}");
+        assert_eq!(fs::read(&me).unwrap(), b"old launcher");
+        assert!(!root.join(".Hopper-Launcher-old.AppImage.new").exists(), "a rejected download was left behind");
+
+        // A good one replaces it in place, runnable, with nothing left over.
+        publish(port, &routes, "v9.0.0", new, &sha(new));
+        let r = install_self_blocking("App-x86_64.AppImage", None).unwrap();
+        assert_eq!((r.tag.as_str(), r.verified, r.restart), ("v9.0.0", true, true));
+        assert_eq!(fs::read(&me).unwrap(), new);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_ne!(fs::metadata(&me).unwrap().permissions().mode() & 0o111, 0, "the new launcher is not executable");
+        }
+        let left: Vec<_> = fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, vec!["Hopper-Launcher-old.AppImage".to_string()], "unexpected leftovers");
+        // Only the AppImage build is accepted for an in-place update.
+        assert!(install_self_blocking("App-win.zip", None).is_err());
+
+        for k in ["HOPPER_SELF_PATH", "HOPPER_SELF_REPO", "HOPPER_API_BASE"] {
+            std::env::remove_var(k);
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
