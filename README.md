@@ -136,7 +136,11 @@ page says which systems it supports, and the launcher only shows the builds that
   or WebP, under 4 MB) for each, and each profile keeps its own theme, accent colour, icon look and
   background, separate from the others. It is purely for fun: nothing is sent anywhere, nothing is locked,
   and your installed apps are shared by every profile. Up to 12 profiles; an existing background and
-  choices move into the first profile ("Player") automatically.
+  choices move into the first profile ("Player") automatically. Under the profile chip is a small private
+  note box (up to 300 characters) for a lyric, a quote or how you feel; it saves as you type, belongs to that
+  profile, and only you ever see it.
+
+  ![The profile chip with its private note box underneath.](docs/images/profile-note.png)
 
   ![Profiles: a list with a picture or initial for each, plus a box to add another.](docs/images/profiles.png)
 - **Rollback.** Every installed app has a small ⟲ button on its tile. It lists every version that app has

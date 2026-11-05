@@ -1129,6 +1129,9 @@ struct Profile {
     /// File name of the profile picture inside its folder, if any.
     #[serde(default)]
     avatar: Option<String>,
+    /// A private note for the owner to see: a quote, a lyric, how they feel. Never leaves the computer.
+    #[serde(default)]
+    note: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -1181,7 +1184,7 @@ fn load_profiles() -> Profiles {
             return p;
         }
     }
-    let first = Profile { id: "default".into(), name: "Player".into(), avatar: None };
+    let first = Profile { id: "default".into(), name: "Player".into(), avatar: None, note: String::new() };
     let p = Profiles { active: first.id.clone(), list: vec![first] };
     let dir = profile_dir("default");
     let _ = fs::create_dir_all(&dir);
@@ -1215,6 +1218,7 @@ struct ProfileView {
     id: String,
     name: String,
     avatar_mime: Option<String>,
+    note: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -1237,7 +1241,7 @@ fn profiles_view() -> ProfilesView {
     let p = load_profiles();
     ProfilesView {
         active: p.active.clone(),
-        profiles: p.list.iter().map(|x| ProfileView { id: x.id.clone(), name: x.name.clone(), avatar_mime: x.avatar.as_deref().and_then(avatar_mime).map(str::to_string) }).collect(),
+        profiles: p.list.iter().map(|x| ProfileView { id: x.id.clone(), name: x.name.clone(), avatar_mime: x.avatar.as_deref().and_then(avatar_mime).map(str::to_string), note: x.note.clone() }).collect(),
     }
 }
 
@@ -1251,6 +1255,19 @@ fn clean_name(name: &str) -> Result<String, String> {
         return Err("A profile name can be up to 24 characters.".into());
     }
     Ok(n)
+}
+
+const MAX_NOTE_CHARS: usize = 300;
+
+/// The note as kept: at most 300 characters, line breaks allowed, other control characters dropped.
+fn clean_note(text: &str) -> String {
+    text.chars().filter(|c| *c == '\n' || !c.is_control()).take(MAX_NOTE_CHARS).collect()
+}
+
+fn set_note_of(id: &str, text: &str) -> Result<(), String> {
+    let mut p = load_profiles();
+    find_profile(&mut p, id)?.note = clean_note(text);
+    save_profiles(&p)
 }
 
 fn new_profile_id(p: &Profiles) -> String {
@@ -1268,7 +1285,7 @@ fn create_profile_named(name: &str) -> Result<(), String> {
     }
     let id = new_profile_id(&p);
     fs::create_dir_all(profile_dir(&id)).map_err(|e| e.to_string())?;
-    p.list.push(Profile { id, name, avatar: None });
+    p.list.push(Profile { id, name, avatar: None, note: String::new() });
     save_profiles(&p)
 }
 
@@ -1353,6 +1370,11 @@ fn rename_profile(id: String, name: String) -> Result<ProfilesView, String> {
     find_profile(&mut p, &id)?.name = name;
     save_profiles(&p)?;
     Ok(profiles_view())
+}
+
+#[tauri::command]
+fn set_profile_note(id: String, text: String) -> Result<(), String> {
+    set_note_of(&id, &text)
 }
 
 #[tauri::command]
@@ -2601,6 +2623,7 @@ pub fn run() {
             list_profiles,
             create_profile,
             rename_profile,
+            set_profile_note,
             switch_profile,
             delete_profile,
             set_profile_avatar,
@@ -3256,6 +3279,18 @@ mod tests {
         assert!(read_avatar_bytes(&second).is_err(), "one profile must not show another's picture");
         clear_avatar_of("default").unwrap();
         assert!(read_avatar_bytes("default").is_err());
+
+        // The private note is kept per profile, limited to 300 characters.
+        set_note_of("default", "  how I feel \u{7}today\nline two ").unwrap();
+        assert_eq!(profiles_view().profiles[0].note, "  how I feel today\nline two ");
+        set_note_of("default", &"é".repeat(400)).unwrap();
+        assert_eq!(profiles_view().profiles[0].note.chars().count(), 300);
+        assert!(set_note_of("nope", "x").is_err());
+        create_profile_named("Other").unwrap();
+        let other = profiles_view().profiles.last().unwrap().id.clone();
+        assert_eq!(profiles_view().profiles.last().unwrap().note, "", "a note leaked into another profile");
+        delete_profile_by_id(&other).unwrap();
+        set_note_of("default", "").unwrap();
 
         // Names are checked; an unknown id is refused; the last profile can't be deleted.
         assert!(clean_name("   ").is_err());

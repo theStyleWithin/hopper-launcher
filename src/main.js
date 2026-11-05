@@ -512,7 +512,23 @@ function renderChip() {
   if (!p) return;
   chip.replaceChildren(avatarEl(p), el("span", { textContent: p.name }));
   chip.setAttribute("aria-label", `Profile: ${p.name}. Open profiles.`);
+  // The private note under the picture. Never overwrite what is being typed; reload it when the profile changes.
+  const box = $("profile-note");
+  box.hidden = false;
+  if (box.dataset.id !== p.id || document.activeElement !== box) { box.value = p.note || ""; box.dataset.id = p.id; }
 }
+
+let noteTimer = null;
+$("profile-note").addEventListener("input", (e) => {
+  const box = e.target;
+  const id = box.dataset.id, text = box.value;
+  const mine = profiles.profiles.find((x) => x.id === id);
+  if (mine) mine.note = text;
+  clearTimeout(noteTimer);
+  noteTimer = setTimeout(() => invoke("set_profile_note", { id, text }).catch((err) => say(String(err), true)), 400);
+});
+// Leaving the window straight after typing still saves it.
+addEventListener("blur", () => { const box = $("profile-note"); if (noteTimer && box.dataset.id) { clearTimeout(noteTimer); noteTimer = null; invoke("set_profile_note", { id: box.dataset.id, text: box.value }).catch(() => {}); } });
 
 /** Re-read everything that belongs to the profile now in use. */
 async function afterSwitch() {
