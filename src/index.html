@@ -8,6 +8,7 @@
 </head>
 <body>
   <div id="wallpaper" aria-hidden="true"></div>
+  <div class="selfnote" id="selfnote" role="status" hidden></div>
   <header>
     <h1>hopper<b>launcher</b></h1>
     <div class="controls">
@@ -15,7 +16,7 @@
         <select id="theme"><option value="cyberpunk">Cyberpunk</option><option value="midnight">Midnight</option><option value="paper">Paper (light)</option></select></div>
       <div><label for="accent">Accent</label>
         <div class="pair"><input type="color" id="accent" value="#19e3ff" aria-label="Accent colour"><button id="reset" type="button">Reset</button></div></div>
-      <div><label>&nbsp;</label><div class="pair"><button id="refresh" type="button">Check for updates</button><button id="open-settings" type="button">Settings</button></div></div>
+      <div><label>&nbsp;</label><div class="pair"><button id="refresh" type="button">Check for updates</button><button id="refresh-stats" type="button" title="Read every app's all-time download total from GitHub right now">↻ Counts</button><button id="open-settings" type="button">Settings</button></div></div>
     </div>
   </header>
 
@@ -34,12 +35,16 @@
     </div>
   </aside>
   <footer><span id="msg"></span><span id="hint"></span></footer>
-  <div class="netstatus" id="netstatus" role="status" aria-live="polite" hidden>
-    <span class="pill" id="pill-net"><i></i><b></b></span>
-    <a href="#" class="pill" id="pill-gh"><i></i><b></b></a>
+  <div class="corner">
+    <div class="netstatus" id="netstatus" role="status" aria-live="polite" hidden>
+      <span class="pill" id="pill-net"><i></i><b></b></span>
+      <a href="#" class="pill" id="pill-gh"><i></i><b></b></a>
+    </div>
+    <button type="button" class="profilechip" id="profile-chip" aria-haspopup="dialog" title="Local profiles"></button>
   </div>
   <dialog id="settings" aria-labelledby="settings-title"></dialog>
   <dialog id="versions" aria-labelledby="versions-title"></dialog>
+  <dialog id="profiles" aria-labelledby="profiles-title"></dialog>
   <script src="main.js"></script>
 </body>
 </html>

@@ -128,7 +128,7 @@ function tile(app) {
     // In the glass look the label is a compact cross (so full names still fit); the words are still there for hover and screen readers.
     const x = button(glass ? "✕" : word, "x", () => uninstall(app), working);
     if (glass) { x.title = word; x.setAttribute("aria-label", `${word} ${app.name}`); }
-    const hist = button("⟲", "x", () => openVersions(app), working);
+    const hist = button("⟲", "x", () => openVersions(appVersions(app)), working);
     hist.title = "Versions and rollback: go back to an older version";
     hist.setAttribute("aria-label", `Versions and rollback for ${app.name}`);
     top.append(hist, x);
@@ -203,6 +203,7 @@ function render() {
   if (dragging) return; // never rebuild the tiles under the user's pointer
   $("grid").replaceChildren(...apps.map(tile));
   renderSummary();
+  syncStatsButton();
 }
 
 // ---------- actions ----------
@@ -238,30 +239,43 @@ async function update(app, file) {
 const versionsDialog = $("versions");
 versionsDialog.addEventListener("cancel", (e) => { e.preventDefault(); versionsDialog.close(); });
 
-/** Lists every published version of one app that has a build for this device, so the user can go back to one. */
-async function openVersions(app) {
+/** What the versions dialog needs to know about the app (or the launcher itself) it is showing. */
+function appVersions(app) {
+  return {
+    title: `${app.name}: versions`,
+    note: "If an update misbehaves, pick an older version to go back to it. Your settings and data are not touched. The launcher won't ask you to update again until something newer than the latest release appears.",
+    current: app.version,
+    load: () => invoke("list_versions", { id: app.id }),
+    busy: () => busy.has(app.id),
+    install: (file, tag) => install(app, file, tag),
+    name: app.name,
+  };
+}
+
+/** Lists every published version that has a build for this device, so the user can go back to one. */
+async function openVersions(t) {
   const sheet = el("div", { className: "sheet" });
-  sheet.append(el("h2", { id: "versions-title", textContent: `${app.name}: versions` }));
-  sheet.append(el("p", { textContent: "If an update misbehaves, pick an older version to go back to it. Your settings and data are not touched. The launcher won't ask you to update again until something newer than the latest release appears." }));
+  sheet.append(el("h2", { id: "versions-title", textContent: t.title }));
+  sheet.append(el("p", { textContent: t.note }));
   const body = el("div", { className: "vlist" }, el("p", { textContent: "Loading versions…" }));
   sheet.append(body, el("div", { className: "foot" }, button("Close", "ghost", () => versionsDialog.close())));
   versionsDialog.replaceChildren(sheet);
   if (!versionsDialog.open) versionsDialog.showModal();
   try {
-    const list = await invoke("list_versions", { id: app.id });
+    const list = await t.load();
     if (!list.length) { body.replaceChildren(el("p", { textContent: "No published versions for this device were found." })); return; }
     body.replaceChildren(...list.map((v) => {
-      const here = app.version === v.tag;
+      const here = t.current === v.tag;
       const meta = [v.date, v.prerelease ? "pre-release" : null, here ? "installed now" : null].filter(Boolean).join(" · ");
       const pick = el("select");
       pick.setAttribute("aria-label", `Build of ${v.tag}`);
       v.builds.forEach((b, i) => pick.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind], b.file)));
       const go = button(here ? "Reinstall" : "Install this version", "go alt", async () => {
-        const msg = here ? `Reinstall ${app.name} ${v.tag}?` : `Switch ${app.name} to ${v.tag}? Your settings and data are kept.`;
+        const msg = here ? `Reinstall ${t.name} ${v.tag}?` : `Switch ${t.name} to ${v.tag}? Your settings and data are kept.`;
         if (!confirm(msg)) return;
         versionsDialog.close();
-        await install(app, pick.value, v.tag);
-      }, busy.has(app.id));
+        await t.install(pick.value, v.tag);
+      }, t.busy());
       return el("div", { className: "vrow" },
         el("div", { className: "vname" }, el("b", { textContent: v.tag }), el("span", { textContent: meta })),
         pick, go);
@@ -348,6 +362,7 @@ async function refresh() {
   render();
   say("Checking GitHub…");
   updateStatus(); // runs alongside; the tiles do not wait for it
+  const selfCheck = checkLauncher(); // the launcher looks for its own update too
   try {
     const found = await invoke("check_releases");
     rememberCounts(found);
@@ -355,7 +370,9 @@ async function refresh() {
     const updates = apps.filter(updatePrompt).length;
     const failed = Object.values(releases).filter((r) => r.error && r.error !== "No release published yet").length;
     const offline = lastNetwork?.internet === "offline";
-    say(offline ? "You're offline. Everything you already have still works." : failed ? "Some apps could not be checked right now." : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date", !!failed);
+    const me = await selfCheck;
+    const note = me?.newer ? ` · Hopper Launcher ${me.latest} is available` : "";
+    say((offline ? "You're offline. Everything you already have still works." : failed ? "Some apps could not be checked right now." : updates ? `${updates} update${updates > 1 ? "s" : ""} available` : "Everything is up to date") + note, !!failed);
   } catch (e) {
     say(String(e), true);
   } finally {
@@ -363,6 +380,232 @@ async function refresh() {
     render();
   }
 }
+
+// ---------- the launcher updating itself ----------
+
+let launcherInfo = null;   // what the last check learned: { current, latest, newer, builds, mode, error }
+let launcherVersion = null;
+let selfSkipped = null;    // a launcher release the user said "not now" to, for this session
+try { window.__TAURI__.app.getVersion().then((v) => { launcherVersion = "v" + v; }).catch(() => {}); } catch (e) {}
+
+async function checkLauncher() {
+  try { launcherInfo = await invoke("check_launcher"); } catch (e) { launcherInfo = null; }
+  renderSelfNote();
+  return launcherInfo;
+}
+
+function renderSelfNote() {
+  const box = $("selfnote");
+  const i = launcherInfo;
+  if (!i || !i.newer || selfSkipped === i.latest) { box.hidden = true; return; }
+  box.hidden = false;
+  box.replaceChildren(
+    el("span", { textContent: `Hopper Launcher ${i.latest} is available (you have ${i.current}).` }),
+    el("div", { className: "pbtns" },
+      button(i.mode === "manual" ? "Open release page" : "Update launcher", "go", () => updateLauncher(i)),
+      button("Not now", "ghost", () => { selfSkipped = i.latest; renderSelfNote(); })));
+}
+
+/** Update to the newest release, picking the right build for how this copy was installed. */
+async function updateLauncher(i) {
+  if (i.mode === "manual") { invoke("open_launcher_releases").catch((e) => say(String(e), true)); return; }
+  const want = i.mode === "appimage" ? (b) => b.kind === "appimage" : (b) => ["installer", "msi"].includes(b.kind);
+  const build = i.builds.find(want);
+  if (!build) { say("No matching launcher build was found in the latest release.", true); return; }
+  if (!confirm(`Update Hopper Launcher to ${i.latest}? Your apps and settings are not touched.`)) return;
+  await installLauncher(build.file, null);
+}
+
+async function installLauncher(file, tag) {
+  say(`Downloading Hopper Launcher${tag ? " " + tag : ""}…`);
+  try {
+    const r = await invoke("install_launcher", { file, tag: tag || null });
+    launcherInfo = null;
+    renderSelfNote();
+    if (r.restart) {
+      if (confirm(`Hopper Launcher ${r.tag} is installed. Restart now to use it? (Apps you launched keep running.)`)) await invoke("restart_launcher");
+      else say(`Hopper Launcher ${r.tag} is installed. It starts next time you open the launcher.`);
+    } else if (r.handed_off) {
+      say(`Hopper Launcher ${r.tag}: its installer opened. Close the launcher and finish the setup there.`);
+    }
+  } catch (e) {
+    say(String(e), true);
+  }
+}
+
+function launcherVersions() {
+  const manual = launcherInfo?.mode === "manual";
+  return {
+    title: "Hopper Launcher: versions",
+    note: manual
+      ? "This copy of the launcher can't replace itself, so installing a version here isn't available. Use the release page to download the one you want."
+      : "Go back to an older launcher, or reinstall the current one. Your apps, profiles and settings are not touched.",
+    current: launcherInfo?.current || launcherVersion,
+    load: () => invoke("launcher_versions"),
+    busy: () => !!manual,
+    install: (file, tag) => installLauncher(file, tag),
+    name: "Hopper Launcher",
+  };
+}
+
+// ---------- refreshing the download totals ----------
+
+function syncStatsButton() {
+  $("refresh-stats").hidden = !settings?.show_downloads;
+}
+
+async function refreshCounts() {
+  const b = $("refresh-stats");
+  const started = Math.floor(Date.now() / 1000) - 5;
+  b.disabled = true;
+  say("Reading download totals from GitHub…");
+  try {
+    const list = await invoke("refresh_downloads");
+    list.forEach((r) => { if (r.downloads != null) counts[r.id] = { downloads: r.downloads, at: r.at }; });
+    const fresh = list.filter((r) => r.at != null && r.at >= started).length;
+    say(fresh ? `Download totals refreshed at ${new Date().toLocaleTimeString()}.` : "Couldn't reach GitHub, so the last numbers are still showing.", !fresh);
+  } catch (e) {
+    say(String(e), true);
+  } finally {
+    b.disabled = false;
+    render();
+  }
+}
+$("refresh-stats").onclick = refreshCounts;
+
+// ---------- local profiles ----------
+
+let profiles = { active: "default", profiles: [] };
+const avatarUrls = new Map(); // profile id -> picture address
+const profilesDialog = $("profiles");
+profilesDialog.addEventListener("cancel", (e) => { e.preventDefault(); profilesDialog.close(); });
+let editingProfile = null;
+let profileMsg = "";
+
+async function loadAvatar(p) {
+  if (!p.avatar_mime) return null;
+  if (avatarUrls.has(p.id)) return avatarUrls.get(p.id);
+  try {
+    const bytes = await invoke("read_profile_avatar", { id: p.id });
+    const url = URL.createObjectURL(new Blob([bytes], { type: p.avatar_mime }));
+    avatarUrls.set(p.id, url);
+    return url;
+  } catch (e) { return null; }
+}
+function forgetAvatar(id) {
+  const u = avatarUrls.get(id);
+  if (u) URL.revokeObjectURL(u);
+  avatarUrls.delete(id);
+}
+/** A round picture, or the first letter of the name until (or unless) a picture is there. */
+function avatarEl(p, big = false) {
+  const a = el("span", { className: "avatar" + (big ? " big" : ""), textContent: (p.name || "?").trim().charAt(0).toUpperCase() });
+  a.setAttribute("aria-hidden", "true");
+  if (p.avatar_mime) loadAvatar(p).then((url) => { if (url) { a.textContent = ""; a.append(el("img", { src: url, alt: "" })); } });
+  return a;
+}
+
+function renderChip() {
+  const chip = $("profile-chip");
+  const p = profiles.profiles.find((x) => x.id === profiles.active);
+  chip.hidden = !p;
+  if (!p) return;
+  chip.replaceChildren(avatarEl(p), el("span", { textContent: p.name }));
+  chip.setAttribute("aria-label", `Profile: ${p.name}. Open profiles.`);
+}
+
+/** Re-read everything that belongs to the profile now in use. */
+async function afterSwitch() {
+  applyPrefs();
+  settings = await invoke("get_settings");
+  await applyWallpaper();
+  renderChip();
+  render();
+  if (dialog.open) renderSettings();
+}
+
+async function useProfile(id) {
+  try {
+    profiles = await invoke("switch_profile", { id });
+    profileId = profiles.active;
+    try { localStorage.setItem("active_profile", profileId); } catch (e) {}
+    await afterSwitch();
+    renderProfiles();
+  } catch (e) { profileMsg = String(e); renderProfiles(); }
+}
+
+async function profileAction(fn) {
+  try {
+    profiles = await fn();
+    profileMsg = "";
+    if (profiles.active !== profileId) {
+      profileId = profiles.active;
+      try { localStorage.setItem("active_profile", profileId); } catch (e) {}
+      await afterSwitch();
+    }
+  } catch (e) { profileMsg = String(e); }
+  renderChip();
+  renderProfiles();
+}
+
+function renderProfiles() {
+  const sheet = el("div", { className: "sheet" });
+  sheet.append(el("h2", { id: "profiles-title", textContent: "Profiles" }));
+  sheet.append(el("p", { textContent: "Local profiles are just for you: a name, a picture, and your own theme, accent colour, icon look and background. Nothing is sent anywhere, and your apps are shared by every profile." }));
+  if (profileMsg) sheet.append(el("p", { className: "bgwarn", textContent: profileMsg }));
+  profiles.profiles.forEach((p) => {
+    const row = el("div", { className: "prow" });
+    const mine = p.id === profiles.active;
+    const name = el("div", { className: "pname" }, el("span", { textContent: p.name }), ...(mine ? [el("small", { textContent: "in use" })] : []));
+    const btns = el("div", { className: "pbtns" });
+    if (!mine) btns.append(button("Use", "go alt", () => useProfile(p.id)));
+    btns.append(button(editingProfile === p.id ? "Done" : "Edit", "ghost", () => { editingProfile = editingProfile === p.id ? null : p.id; profileMsg = ""; renderProfiles(); }));
+    row.append(avatarEl(p, true), name, btns);
+    if (editingProfile === p.id) {
+      const box = el("div", { className: "pedit" });
+      const input = el("input", { type: "text", value: p.name, maxLength: 24 });
+      input.setAttribute("aria-label", "Profile name");
+      const rename = () => profileAction(() => invoke("rename_profile", { id: p.id, name: input.value }));
+      input.onkeydown = (e) => { if (e.key === "Enter") rename(); };
+      const actions = el("div", { className: "pbtns" },
+        button("Save name", "go alt", rename),
+        button(p.avatar_mime ? "Change picture…" : "Choose a picture…", "ghost", async () => {
+          try {
+            const path = await window.__TAURI__.dialog.open({ multiple: false, directory: false, title: "Choose a profile picture", filters: [{ name: "Pictures", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }] });
+            if (!path) return;
+            forgetAvatar(p.id);
+            await profileAction(() => invoke("set_profile_avatar", { id: p.id, path }));
+          } catch (e) { profileMsg = String(e); renderProfiles(); }
+        }));
+      if (p.avatar_mime) actions.append(button("Remove picture", "ghost", () => { forgetAvatar(p.id); return profileAction(() => invoke("clear_profile_avatar", { id: p.id })); }));
+      if (profiles.profiles.length > 1) actions.append(button("Delete profile", "ghost", () => {
+        if (!confirm(`Delete the profile "${p.name}"? Its picture and background are removed. Your apps are not affected.`)) return;
+        forgetAvatar(p.id);
+        editingProfile = null;
+        return profileAction(() => invoke("delete_profile", { id: p.id }));
+      }));
+      box.append(input, actions);
+      row.append(box);
+    }
+    sheet.append(row);
+  });
+  const add = el("div", { className: "padd" });
+  const nameBox = el("input", { type: "text", placeholder: "New profile name", maxLength: 24 });
+  nameBox.setAttribute("aria-label", "New profile name");
+  const create = () => { const n = nameBox.value; nameBox.value = ""; return profileAction(() => invoke("create_profile", { name: n })); };
+  nameBox.onkeydown = (e) => { if (e.key === "Enter") create(); };
+  add.append(nameBox, button("Add profile", "go alt", create));
+  sheet.append(add, el("div", { className: "foot" }, button("Close", "ghost", () => profilesDialog.close())));
+  profilesDialog.replaceChildren(sheet);
+}
+
+function openProfiles() {
+  editingProfile = null;
+  profileMsg = "";
+  renderProfiles();
+  if (!profilesDialog.open) profilesDialog.showModal();
+}
+$("profile-chip").onclick = openProfiles;
 
 // ---------- reordering ----------
 
@@ -436,6 +679,7 @@ async function quietCheck() {
   if (!device || busy.size || Date.now() - lastCheck < CHECK_EVERY) return;
   lastCheck = Date.now();
   updateStatus();
+  checkLauncher();
   const before = Object.fromEntries(Object.entries(releases).map(([id, r]) => [id, r.tag]));
   try {
     const found = await invoke("check_releases");
@@ -911,6 +1155,15 @@ function renderSettings() {
   sheet.append(el("label", { className: "choice" }, archiveBox, el("b", { textContent: "Show the Internet Archive backup" }),
     el("span", { textContent: "Off by default. A safety net of older versions kept on the Internet Archive, in case a repository or GitHub itself is ever unavailable. When it is on, a list appears beside the apps and you pick a file yourself. The launcher only contacts archive.org while it is on." })));
 
+  sheet.append(el("h3", { textContent: "Hopper Launcher" }));
+  const cur = launcherInfo?.current || launcherVersion || "this version";
+  sheet.append(el("p", { textContent: launcherInfo?.newer ? `You have ${cur}. ${launcherInfo.latest} is available.` : launcherInfo?.latest ? `You have ${cur}, which is the newest.` : `You have ${cur}. "Check for updates" at the top also looks for a new launcher.` }));
+  const lrow = el("div", { className: "bgrow" },
+    button("Check for a launcher update", "ghost", async () => { await checkLauncher(); renderSettings(); }),
+    button("Versions and rollback…", "ghost", () => openVersions(launcherVersions())));
+  if (launcherInfo?.newer) lrow.prepend(button(launcherInfo.mode === "manual" ? "Open release page" : "Update launcher", "go alt", () => updateLauncher(launcherInfo)));
+  sheet.append(lrow);
+
   sheet.append(el("h3", { textContent: "Your apps" }));
   if (settings.custom_order) {
     sheet.append(button("Reset the order to alphabetical", "ghost", async () => {
@@ -954,10 +1207,14 @@ function lum(hex) {
 }
 const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
 const toHex = (rgb) => "#" + rgb.match(/\d+/g).slice(0, 3).map((n) => (+n).toString(16).padStart(2, "0")).join("");
+let profileId = (() => { try { return localStorage.getItem("active_profile") || "default"; } catch (e) { return "default"; } })();
+// Each profile keeps its own theme, accent, icon look and animation choice. Choices saved before profiles
+// existed belong to the first profile ("default").
 const store = {
-  get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } },
-  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
-  del: (k) => { try { localStorage.removeItem(k); } catch (e) {} },
+  key: (k) => `p:${profileId}:${k}`,
+  get: (k) => { try { const v = localStorage.getItem(store.key(k)); return v === null && profileId === "default" ? localStorage.getItem(k) : v; } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(store.key(k), v); if (profileId === "default") localStorage.removeItem(k); } catch (e) {} },
+  del: (k) => { try { localStorage.removeItem(store.key(k)); if (profileId === "default") localStorage.removeItem(k); } catch (e) {} },
 };
 
 function syncPicker() {
@@ -1009,15 +1266,19 @@ function setLook(value) {
 
 // ---------- start ----------
 
-const savedTheme = store.get("theme");
-if (savedTheme && [...$("theme").options].some((o) => o.value === savedTheme)) {
-  root.dataset.theme = savedTheme;
-  $("theme").value = savedTheme;
+function applyPrefs() {
+  const t = store.get("theme");
+  const theme = t && [...$("theme").options].some((o) => o.value === t) ? t : "cyberpunk";
+  root.dataset.theme = theme;
+  $("theme").value = theme;
+  const a = store.get("accent");
+  if (/^#[0-9a-f]{6}$/i.test(a || "")) setAccent(a, false);
+  else { root.style.removeProperty("--accent"); root.style.removeProperty("--accent-ink"); syncPicker(); }
+  look = store.get("look") === "glass" ? "glass" : "classic"; // classic stays the default
+  document.body.dataset.look = look;
+  checkContrast();
 }
-const savedAccent = store.get("accent");
-if (/^#[0-9a-f]{6}$/i.test(savedAccent || "")) setAccent(savedAccent, false);
-else syncPicker();
-checkContrast();
+applyPrefs();
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
@@ -1030,6 +1291,13 @@ setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but onl
   try {
     device = await invoke("get_device");
     renderDevice();
+    profiles = await invoke("list_profiles");
+    if (profiles.active !== profileId) {
+      profileId = profiles.active;
+      try { localStorage.setItem("active_profile", profileId); } catch (e) {}
+      applyPrefs();
+    }
+    renderChip();
     settings = await invoke("get_settings");
     await loadApps();
     applyArchive();

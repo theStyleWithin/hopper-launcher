@@ -124,6 +124,21 @@ page says which systems it supports, and the launcher only shows the builds that
   launcher is idle and in front, and rest on their first frame whenever you use the mouse or keyboard (or
   when Blur is on), so launching apps never competes with the animation. There is an "Animate the GIF"
   switch to turn it off. Desktop for now.
+- **The launcher updates itself.** "Check for updates" also looks for a newer Hopper Launcher. If there is
+  one, a note appears at the top with an **Update launcher** button. The Linux AppImage replaces itself in
+  place (checksum checked first, never half-written) and offers to restart; on Windows it opens the new
+  installer; any other copy opens the release page. Settings → Hopper Launcher also has **Versions and
+  rollback…** to go back to an older launcher.
+- **Counts button.** "↻ Counts" next to "Check for updates" reads every app's all-time download total from
+  GitHub right now, so you can watch the numbers move without checking for updates. If GitHub can't be
+  reached, the last numbers stay.
+- **Local profiles.** The chip under the status lights opens Profiles: a name and a picture (PNG, JPEG, GIF
+  or WebP, under 4 MB) for each, and each profile keeps its own theme, accent colour, icon look and
+  background, separate from the others. It is purely for fun: nothing is sent anywhere, nothing is locked,
+  and your installed apps are shared by every profile. Up to 12 profiles; an existing background and
+  choices move into the first profile ("Player") automatically.
+
+  ![Profiles: a list with a picture or initial for each, plus a box to add another.](docs/images/profiles.png)
 - **Rollback.** Every installed app has a small ⟲ button on its tile. It lists every version that app has
   published for your system, and you can install any of them, so you can go back if an update misbehaves.
   Your settings and data are not touched, checksums are still checked, and the launcher stops asking you to
