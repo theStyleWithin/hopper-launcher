@@ -129,6 +129,14 @@ page says which systems it supports, and the launcher only shows the builds that
   place (checksum checked first, never half-written) and offers to restart; on Windows it opens the new
   installer; any other copy opens the release page. Settings → Hopper Launcher also has **Versions and
   rollback…** to go back to an older launcher.
+- **Walls.** On wide windows (about 1700 pixels or more) the empty space beside the apps becomes two
+  scrollable walls: open **issues** on the left and recent **discussions** on the right, from every app's
+  repository and the launcher's own. Each item shows its repository, number, author, age and labels, you can
+  filter by repository, and clicking one opens it in your browser (only pages of your own repositories ever
+  open). It reads public GitHub pages when you check for updates, keeps the last reading for offline, and
+  there is a switch in Settings.
+
+  ![Wide window: issues on the left, the apps in the middle, discussions on the right.](docs/images/walls.png)
 - **Counts button.** "↻ Counts" next to "Check for updates" reads every app's all-time download total from
   GitHub right now, so you can watch the numbers move without checking for updates. If GitHub can't be
   reached, the last numbers stay.

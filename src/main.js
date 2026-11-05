@@ -363,6 +363,7 @@ async function refresh() {
   say("Checking GitHub…");
   updateStatus(); // runs alongside; the tiles do not wait for it
   const selfCheck = checkLauncher(); // the launcher looks for its own update too
+  loadWalls(true);                   // and the walls of issues and discussions
   try {
     const found = await invoke("check_releases");
     rememberCounts(found);
@@ -537,6 +538,7 @@ async function afterSwitch() {
   await applyWallpaper();
   renderChip();
   render();
+  renderWalls();
   if (dialog.open) renderSettings();
 }
 
@@ -623,6 +625,94 @@ function openProfiles() {
 }
 $("profile-chip").onclick = openProfiles;
 
+// ---------- the walls: issues and discussions ----------
+
+let walls = { issues: [], discussions: [] };
+const wallFilter = { issues: "all", discussions: "all" };
+let wallsRead = false; // true once a reading (even a failed one) has come back
+
+function ago(iso) {
+  const t = Date.parse(iso);
+  if (!t) return "";
+  const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  if (d < 60) return `${d} d ago`;
+  return new Date(t).toLocaleDateString();
+}
+
+const WALL_KINDS = {
+  issues: { box: "wall-issues", title: "Issues", empty: "No open issues. Nice and quiet.", noun: "open" },
+  discussions: { box: "wall-discussions", title: "Discussions", empty: "No discussions yet.", noun: "recent" },
+};
+
+function renderWall(kind) {
+  const meta = WALL_KINDS[kind];
+  const box = $(meta.box);
+  if (!settings?.show_walls || device?.os === "android") { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const list = walls[kind] || [];
+  const accentOf = (id) => apps.find((a) => a.id === id)?.accent;
+  const pick = wallFilter[kind] !== "all" && list.some((w) => w.id === wallFilter[kind]) ? wallFilter[kind] : "all";
+  const shown = list
+    .filter((w) => pick === "all" || w.id === pick)
+    .flatMap((w) => w.items.map((it) => ({ ...it, repoId: w.id, repoName: w.name })))
+    .sort((a, b) => (Date.parse(b.when) || 0) - (Date.parse(a.when) || 0))
+    .slice(0, 100);
+
+  const total = list.reduce((n, w) => n + w.items.length, 0);
+  const filter = el("select");
+  filter.setAttribute("aria-label", `Show ${meta.title.toLowerCase()} from`);
+  filter.add(new Option("All repositories", "all"));
+  list.forEach((w) => filter.add(new Option(`${w.name} (${w.items.length})`, w.id)));
+  filter.value = pick;
+  filter.onchange = () => { wallFilter[kind] = filter.value; renderWall(kind); };
+
+  const stale = list.some((w) => w.at != null && !w.fresh);
+  const times = list.map((w) => w.at).filter(Boolean);
+  const newest = times.length ? Math.max(...times) : null;
+  const stamp = el("div", { className: "stamp" + (stale ? " warn" : ""),
+    textContent: !wallsRead && !newest ? "Reading GitHub…" : stale ? `Offline: showing what was read ${ago(new Date(newest * 1000).toISOString())}` : newest ? `Read ${ago(new Date(newest * 1000).toISOString())}` : "" });
+
+  const head = el("header", {}, el("h2", { id: meta.box + "-title" }, el("span", { textContent: meta.title }), el("small", { textContent: `${total} ${meta.noun}` })), filter, stamp);
+
+  const body = el("div", { className: "wlist", tabIndex: 0 });
+  body.setAttribute("role", "list");
+  body.setAttribute("aria-label", `${meta.title} from your repositories`);
+  if (!shown.length) {
+    const notes = list.filter((w) => w.note && (pick === "all" || w.id === pick)).map((w) => `${w.name}: ${w.note}`);
+    body.append(el("div", { className: "wempty", textContent: wallsRead || newest ? meta.empty : "Reading GitHub…" }));
+    if (kind === "discussions" && notes.length === list.length && list.length) body.firstChild.textContent = "No discussions to show: they are not turned on for these repositories.";
+  }
+  shown.forEach((it) => {
+    const b = el("button", { type: "button", className: "witem", title: it.title });
+    b.setAttribute("role", "listitem");
+    const a = accentOf(it.repoId);
+    if (a) b.style.setProperty("--a", a);
+    const bits = [it.number != null ? `#${it.number}` : null, it.author, ago(it.when), it.comments ? `${it.comments} comment${it.comments > 1 ? "s" : ""}` : null].filter(Boolean).join(" · ");
+    b.append(el("span", { className: "chip", textContent: it.repoName }), el("span", { className: "wtitle", textContent: it.title }), el("span", { className: "wmeta", textContent: bits + (it.labels?.length ? " · " + it.labels.slice(0, 2).join(", ") : "") }));
+    b.onclick = () => invoke("open_link", { url: it.url }).catch((e) => say(String(e), true));
+    body.append(b);
+  });
+  box.replaceChildren(head, body);
+}
+
+function renderWalls() { renderWall("issues"); renderWall("discussions"); }
+
+/** Show what was saved straight away, then (when asked) read GitHub again. */
+async function loadWalls(read) {
+  if (!settings?.show_walls) { renderWalls(); return; }
+  try { walls = await invoke("saved_walls"); } catch (e) {}
+  renderWalls();
+  if (!read) return;
+  try { walls = await invoke("wall_items"); } catch (e) {}
+  wallsRead = true;
+  renderWalls();
+}
+
 // ---------- reordering ----------
 
 let dragging = null;
@@ -696,6 +786,7 @@ async function quietCheck() {
   lastCheck = Date.now();
   updateStatus();
   checkLauncher();
+  loadWalls(true);
   const before = Object.fromEntries(Object.entries(releases).map(([id, r]) => [id, r.tag]));
   try {
     const found = await invoke("check_releases");
@@ -1138,6 +1229,16 @@ function renderSettings() {
     }
   }
 
+  sheet.append(el("h3", { textContent: "Issues and discussions" }));
+  const wallBox = el("input", { type: "checkbox", checked: settings.show_walls });
+  wallBox.onchange = async () => {
+    try { settings = await invoke("set_show_walls", { enabled: wallBox.checked }); } catch (e) { say(String(e), true); }
+    if (settings.show_walls) loadWalls(true); else { walls = { issues: [], discussions: [] }; renderWalls(); }
+    renderSettings();
+  };
+  sheet.append(el("label", { className: "choice" }, wallBox, el("b", { textContent: "Show the issues and discussions walls" }),
+    el("span", { textContent: "On wide windows (about 1700 pixels or more) the empty space beside the apps shows open issues on the left and recent discussions on the right, from every repository in the list and the launcher itself. It reads only public GitHub pages, when you check for updates, and keeps the last reading for offline. Clicking an item opens it in your browser." })));
+
   sheet.append(el("h3", { textContent: "Download counts" }));
   const countBox = el("input", { type: "checkbox", checked: settings.show_downloads });
   countBox.onchange = async () => {
@@ -1317,6 +1418,7 @@ setInterval(quietCheck, 15 * 60 * 1000); // wakes up four times an hour, but onl
     settings = await invoke("get_settings");
     await loadApps();
     applyArchive();
+    loadWalls(false);
     applyWallpaper();
     updateStatus();
     if (settings.first_run && device.os !== "android") openSettings(true);

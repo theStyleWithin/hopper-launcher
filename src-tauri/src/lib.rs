@@ -1,4 +1,5 @@
 mod classify;
+mod walls;
 mod device;
 
 use classify::{builds_for, is_handoff, Asset, Build};
@@ -443,6 +444,14 @@ async fn network_status() -> Result<NetworkStatus, String> {
 fn set_show_downloads(enabled: bool) -> Result<SettingsView, String> {
     let mut settings = load_settings();
     settings.show_downloads = enabled;
+    save_settings(&settings)?;
+    Ok(settings_view())
+}
+
+#[tauri::command]
+fn set_show_walls(enabled: bool) -> Result<SettingsView, String> {
+    let mut settings = load_settings();
+    settings.show_walls = enabled;
     save_settings(&settings)?;
     Ok(settings_view())
 }
@@ -1451,6 +1460,9 @@ struct Settings {
     /// Show each app's download total on its tile. On unless the user turns it off.
     #[serde(default = "default_true")]
     show_downloads: bool,
+    /// Show the issues and discussions walls beside the apps on wide windows. On unless the user turns it off.
+    #[serde(default = "default_true")]
+    show_walls: bool,
     /// Older versions kept the background here. It now belongs to a profile; these are only read once,
     /// to move an existing background into the first profile, and are no longer written.
     #[serde(default, skip_serializing)]
@@ -1463,7 +1475,7 @@ struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true, show_downloads: true, bg_file: None, bg_dim: default_dim(), bg_blur: 0 }
+        Settings { existing_mode: default_mode(), search_folders: true, extra_folders: vec![], first_run_done: false, app_order: vec![], archive_enabled: false, show_status: true, show_downloads: true, show_walls: true, bg_file: None, bg_dim: default_dim(), bg_blur: 0 }
     }
 }
 
@@ -2450,6 +2462,8 @@ struct SettingsView {
     show_status: bool,
     /// Whether each app's download total is shown on its tile.
     show_downloads: bool,
+    /// Whether the issues and discussions walls are shown on wide windows.
+    show_walls: bool,
     /// Whether the user has chosen a background picture, its type, and how it is dimmed and blurred.
     bg_has: bool,
     bg_mime: Option<String>,
@@ -2481,6 +2495,7 @@ fn settings_view() -> SettingsView {
         archive_enabled: settings.archive_enabled,
         show_status: settings.show_status,
         show_downloads: settings.show_downloads,
+        show_walls: settings.show_walls,
         bg_has: look.bg_file.is_some(),
         bg_mime: look.bg_file.as_deref().and_then(background_mime).map(str::to_string),
         bg_dim: look.bg_dim.min(90),
@@ -2640,6 +2655,10 @@ pub fn run() {
             network_status,
             set_show_status,
             set_show_downloads,
+            set_show_walls,
+            walls::wall_items,
+            walls::saved_walls,
+            walls::open_link,
             set_background,
             clear_background,
             set_background_look,
@@ -3310,6 +3329,58 @@ mod tests {
         assert_eq!(profiles_view().active, "default");
         // A tampered profile id can't point outside the profiles folder.
         assert_eq!(profile_dir("../../x"), data.join("profiles/default"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_walls_list_issues_and_discussions_keep_the_last_reading_and_skip_pull_requests() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-walls-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        std::env::set_var("HOPPER_SELF_REPO", "me/self");
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        std::env::set_var("HOPPER_WEB_BASE", format!("http://127.0.0.1:{port}"));
+        let issues = serde_json::to_vec(&serde_json::json!([
+            {"number": 5, "title": "Crash on start", "html_url": "https://github.com/me/app/issues/5", "updated_at": "2026-11-02T10:00:00Z", "comments": 3, "user": {"login": "viewer"}, "labels": [{"name": "bug"}]},
+            {"number": 4, "title": "A pull request", "html_url": "https://github.com/me/app/pull/4", "updated_at": "2026-11-01T10:00:00Z", "comments": 0, "user": {"login": "dev"}, "labels": [], "pull_request": {"url": "x"}}
+        ])).unwrap();
+        let feed = br#"<feed><entry><updated>2026-11-01T10:00:00Z</updated><link rel="alternate" href="https://github.com/me/app/discussions/9"/><title>Ideas</title><author><name>fan</name></author></entry></feed>"#.to_vec();
+        {
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/app/issues?state=open&sort=updated&per_page=30".into(), issues);
+            r.insert("/me/app/discussions.atom".into(), feed);
+            r.insert("/repos/me/self/issues?state=open&sort=updated&per_page=30".into(), b"[]".to_vec());
+            r.insert("/me/self/discussions.atom".into(), b"__STATUS__:404".to_vec());
+        }
+        let apps = vec![AppEntry { repo: "me/app".into(), ..entry("app", "App") }];
+        let w = walls::refresh_walls_blocking(&apps, 1_000);
+        assert_eq!(w.issues.len(), 2, "one wall per repository: the app and the launcher");
+        let a = &w.issues[0];
+        assert_eq!((a.items.len(), a.items[0].title.as_str(), a.items[0].comments, a.fresh), (1, "Crash on start", Some(3), true), "the pull request must be left out");
+        assert_eq!(a.items[0].labels, vec!["bug".to_string()]);
+        assert_eq!(w.discussions[0].items[0].title, "Ideas");
+        assert_eq!(w.discussions[1].note.as_deref(), Some("Discussions are not turned on here."));
+
+        // GitHub stops answering: the last reading is kept, marked as not fresh.
+        {
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/app/issues?state=open&sort=updated&per_page=30".into(), b"__STATUS__:503".to_vec());
+            r.insert("/me/app/discussions.atom".into(), b"__STATUS__:503".to_vec());
+        }
+        let w2 = walls::refresh_walls_blocking(&apps, 2_000);
+        assert_eq!((w2.issues[0].items.len(), w2.issues[0].fresh, w2.issues[0].at), (1, false, Some(1_000)));
+        assert_eq!((w2.discussions[0].items.len(), w2.discussions[0].fresh), (1, false));
+        // And it is what the walls show at the next start, with no request at all.
+        assert_eq!(walls::saved_walls().issues[0].items[0].title, "Crash on start");
+
+        // Switched off: nothing is shown or read.
+        set_show_walls(false).unwrap();
+        assert!(walls::saved_walls().issues.is_empty());
+        for k in ["HOPPER_SELF_REPO", "HOPPER_API_BASE", "HOPPER_WEB_BASE"] {
+            std::env::remove_var(k);
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
