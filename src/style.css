@@ -290,3 +290,11 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .witem .wtitle { overflow-wrap: anywhere; }
 .witem .wmeta { font-size: 12px; line-height: 16px; color: var(--dim); }
 .wempty { padding: 16px; font-size: 13px; line-height: 20px; color: var(--dim); }
+
+/* A hint that the launcher itself has an update waiting */
+.updwrap { position: relative; display: inline-flex; }
+.updbadge { position: absolute; top: -9px; right: -9px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #ff3b4e; color: #fff; font-style: normal; font-weight: 800; font-size: 14px; line-height: 22px; box-shadow: 0 0 0 2px var(--bg); animation: updping 1.6s ease-out infinite; pointer-events: none; }
+.updbadge[hidden] { display: none; }
+@keyframes updping { 0% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 0 rgba(255, 59, 78, .7); } 70%, 100% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 10px rgba(255, 59, 78, 0); } }
+@media (prefers-reduced-motion: reduce) { .updbadge { animation: none; } }
+#upd-label.hint { color: #ff3b4e; font-weight: 700; letter-spacing: .5px; text-transform: none; font-size: 13px; }

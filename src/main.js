@@ -395,7 +395,20 @@ async function checkLauncher() {
   return launcherInfo;
 }
 
+/** The "!" on the button and the words above it stay until the launcher is updated, even if the note is dismissed. */
+function renderUpdateHint() {
+  const on = !!launcherInfo?.newer;
+  $("upd-badge").hidden = !on;
+  const label = $("upd-label");
+  label.textContent = on ? "New updates ready!" : "\u00a0";
+  label.classList.toggle("hint", on);
+  const b = $("refresh");
+  b.setAttribute("aria-label", on ? `Check for updates. Hopper Launcher ${launcherInfo.latest} is ready to install.` : "Check for updates");
+  b.title = on ? `Hopper Launcher ${launcherInfo.latest} is ready. Open Settings → Hopper Launcher to update.` : "";
+}
+
 function renderSelfNote() {
+  renderUpdateHint();
   const box = $("selfnote");
   const i = launcherInfo;
   if (!i || !i.newer || selfSkipped === i.latest) { box.hidden = true; return; }

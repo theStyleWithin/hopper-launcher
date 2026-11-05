@@ -127,7 +127,9 @@ page says which systems it supports, and the launcher only shows the builds that
 - **The launcher updates itself.** "Check for updates" also looks for a newer Hopper Launcher. If there is
   one, a note appears at the top with an **Update launcher** button. The Linux AppImage replaces itself in
   place (checksum checked first, never half-written) and offers to restart; on Windows it opens the new
-  installer; any other copy opens the release page. Settings → Hopper Launcher also has **Versions and
+  installer; any other copy opens the release page. While a newer launcher is waiting, the button wears a red
+  "!" and "New updates ready!" shows above it, so you notice without having to check (the launcher looks by
+  itself when it opens and every few hours). Settings → Hopper Launcher also has **Versions and
   rollback…** to go back to an older launcher.
 - **Walls.** On wide windows (about 1700 pixels or more) the empty space beside the apps becomes two
   scrollable walls: open **issues** on the left and recent **discussions** on the right, from every app's

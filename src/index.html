@@ -16,7 +16,7 @@
         <select id="theme"><option value="cyberpunk">Cyberpunk</option><option value="midnight">Midnight</option><option value="paper">Paper (light)</option></select></div>
       <div><label for="accent">Accent</label>
         <div class="pair"><input type="color" id="accent" value="#19e3ff" aria-label="Accent colour"><button id="reset" type="button">Reset</button></div></div>
-      <div><label>&nbsp;</label><div class="pair"><button id="refresh" type="button">Check for updates</button><button id="refresh-stats" type="button" title="Read every app's all-time download total from GitHub right now">↻ Counts</button><button id="open-settings" type="button">Settings</button></div></div>
+      <div><label id="upd-label" aria-live="polite">&nbsp;</label><div class="pair"><span class="updwrap"><button id="refresh" type="button">Check for updates</button><i class="updbadge" id="upd-badge" aria-hidden="true" hidden>!</i></span><button id="refresh-stats" type="button" title="Read every app's all-time download total from GitHub right now">↻ Counts</button><button id="open-settings" type="button">Settings</button></div></div>
     </div>
   </header>
 
