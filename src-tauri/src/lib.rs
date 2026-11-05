@@ -470,7 +470,7 @@ const MAX_BACKGROUND_BYTES: u64 = 12 * 1024 * 1024;
 const BACKGROUND_NAMES: [(&str, &str); 4] = [("background.png", "image/png"), ("background.gif", "image/gif"), ("background.jpg", "image/jpeg"), ("background.webp", "image/webp")];
 
 fn background_dir() -> PathBuf {
-    data_dir().join("background")
+    profile_dir(&active_profile_id()).join("background")
 }
 
 fn background_mime(name: &str) -> Option<&'static str> {
@@ -508,9 +508,9 @@ fn set_background_from(path: &Path) -> Result<(), String> {
         let _ = fs::remove_file(dir.join(old)); // only one picture is ever kept
     }
     fs::write(dir.join(name), &bytes).map_err(|e| e.to_string())?;
-    let mut settings = load_settings();
-    settings.bg_file = Some(name.to_string());
-    save_settings(&settings)
+    let mut look = load_look();
+    look.bg_file = Some(name.to_string());
+    save_look(&look)
 }
 
 fn clear_background_files() -> Result<(), String> {
@@ -518,15 +518,15 @@ fn clear_background_files() -> Result<(), String> {
     for (old, _) in BACKGROUND_NAMES {
         let _ = fs::remove_file(dir.join(old));
     }
-    let mut settings = load_settings();
-    settings.bg_file = None;
-    save_settings(&settings)
+    let mut look = load_look();
+    look.bg_file = None;
+    save_look(&look)
 }
 
 /// The kept picture's bytes. The name comes from settings.json, so it is checked against the three allowed
 /// names before it is ever used as a path.
 fn read_background_bytes() -> Result<Vec<u8>, String> {
-    let name = load_settings().bg_file.ok_or_else(|| "No background picture is set.".to_string())?;
+    let name = load_look().bg_file.ok_or_else(|| "No background picture is set.".to_string())?;
     if background_mime(&name).is_none() {
         return Err("The saved background name is not valid.".into());
     }
@@ -547,10 +547,10 @@ fn clear_background() -> Result<SettingsView, String> {
 
 #[tauri::command]
 fn set_background_look(dim: u8, blur: u8) -> Result<SettingsView, String> {
-    let mut settings = load_settings();
-    settings.bg_dim = dim.min(90);
-    settings.bg_blur = blur.min(20);
-    save_settings(&settings)?;
+    let mut look = load_look();
+    look.bg_dim = dim.min(90);
+    look.bg_blur = blur.min(20);
+    save_look(&look)?;
     Ok(settings_view())
 }
 
@@ -1113,6 +1113,280 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
     Ok(InstallResult { tag: release.tag_name, verified, handed_off })
 }
 
+// ---------- local profiles ----------
+//
+// Purely for the user's own enjoyment: a name and a picture, each with its own theme, accent, icon look and
+// background. Nothing here is an account in any online sense, nothing is sent anywhere, and it restricts
+// nothing: the installed apps and their settings are shared by every profile.
+
+const MAX_PROFILES: usize = 12;
+const MAX_AVATAR_BYTES: u64 = 4 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Profile {
+    id: String,
+    name: String,
+    /// File name of the profile picture inside its folder, if any.
+    #[serde(default)]
+    avatar: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+struct Profiles {
+    active: String,
+    list: Vec<Profile>,
+}
+
+/// One profile's background settings.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct Look {
+    #[serde(default)]
+    bg_file: Option<String>,
+    #[serde(default = "default_dim")]
+    bg_dim: u8,
+    #[serde(default)]
+    bg_blur: u8,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { bg_file: None, bg_dim: default_dim(), bg_blur: 0 }
+    }
+}
+
+fn valid_profile_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 12 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+}
+
+fn profiles_path() -> PathBuf {
+    data_dir().join("profiles.json")
+}
+
+/// A profile's own folder. An id that is not one we would have made falls back to the first profile's.
+fn profile_dir(id: &str) -> PathBuf {
+    data_dir().join("profiles").join(if valid_profile_id(id) { id } else { "default" })
+}
+
+fn save_profiles(p: &Profiles) -> Result<(), String> {
+    fs::create_dir_all(data_dir()).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
+    fs::write(profiles_path(), text).map_err(|e| e.to_string())
+}
+
+/// The saved profiles. The first time (or if the file is damaged) one profile, "Player", is made, and a
+/// background chosen in an older version is moved into it so nothing is lost.
+fn load_profiles() -> Profiles {
+    if let Some(p) = fs::read_to_string(profiles_path()).ok().and_then(|t| serde_json::from_str::<Profiles>(&t).ok()) {
+        if !p.list.is_empty() && p.list.iter().all(|x| valid_profile_id(&x.id)) && p.list.iter().any(|x| x.id == p.active) {
+            return p;
+        }
+    }
+    let first = Profile { id: "default".into(), name: "Player".into(), avatar: None };
+    let p = Profiles { active: first.id.clone(), list: vec![first] };
+    let dir = profile_dir("default");
+    let _ = fs::create_dir_all(&dir);
+    let old = load_settings();
+    let old_dir = data_dir().join("background");
+    if old_dir.is_dir() && !dir.join("background").exists() {
+        let _ = fs::rename(&old_dir, dir.join("background"));
+    }
+    let look = Look { bg_file: old.bg_file.clone(), bg_dim: old.bg_dim, bg_blur: old.bg_blur };
+    let _ = fs::write(dir.join("look.json"), serde_json::to_string_pretty(&look).unwrap_or_default());
+    let _ = save_profiles(&p);
+    p
+}
+
+fn active_profile_id() -> String {
+    load_profiles().active
+}
+
+fn load_look() -> Look {
+    fs::read_to_string(profile_dir(&active_profile_id()).join("look.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn save_look(look: &Look) -> Result<(), String> {
+    let dir = profile_dir(&active_profile_id());
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("look.json"), serde_json::to_string_pretty(look).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Debug)]
+struct ProfileView {
+    id: String,
+    name: String,
+    avatar_mime: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct ProfilesView {
+    active: String,
+    profiles: Vec<ProfileView>,
+}
+
+fn avatar_mime(name: &str) -> Option<&'static str> {
+    match name {
+        "avatar.png" => Some("image/png"),
+        "avatar.jpg" => Some("image/jpeg"),
+        "avatar.gif" => Some("image/gif"),
+        "avatar.webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn profiles_view() -> ProfilesView {
+    let p = load_profiles();
+    ProfilesView {
+        active: p.active.clone(),
+        profiles: p.list.iter().map(|x| ProfileView { id: x.id.clone(), name: x.name.clone(), avatar_mime: x.avatar.as_deref().and_then(avatar_mime).map(str::to_string) }).collect(),
+    }
+}
+
+/// A profile name: 1 to 24 visible characters.
+fn clean_name(name: &str) -> Result<String, String> {
+    let n: String = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if n.is_empty() {
+        return Err("Please give the profile a name.".into());
+    }
+    if n.chars().count() > 24 || n.chars().any(|c| c.is_control()) {
+        return Err("A profile name can be up to 24 characters.".into());
+    }
+    Ok(n)
+}
+
+fn new_profile_id(p: &Profiles) -> String {
+    (2..)
+        .map(|n| format!("p{n}"))
+        .find(|id| !p.list.iter().any(|x| &x.id == id) && !profile_dir(id).exists())
+        .unwrap_or_else(|| "p99".into())
+}
+
+fn create_profile_named(name: &str) -> Result<(), String> {
+    let name = clean_name(name)?;
+    let mut p = load_profiles();
+    if p.list.len() >= MAX_PROFILES {
+        return Err(format!("That's plenty: up to {MAX_PROFILES} profiles."));
+    }
+    let id = new_profile_id(&p);
+    fs::create_dir_all(profile_dir(&id)).map_err(|e| e.to_string())?;
+    p.list.push(Profile { id, name, avatar: None });
+    save_profiles(&p)
+}
+
+fn find_profile<'a>(p: &'a mut Profiles, id: &str) -> Result<&'a mut Profile, String> {
+    p.list.iter_mut().find(|x| x.id == id).ok_or_else(|| "That profile no longer exists.".to_string())
+}
+
+fn delete_profile_by_id(id: &str) -> Result<(), String> {
+    let mut p = load_profiles();
+    if p.list.len() <= 1 {
+        return Err("The last profile can't be deleted.".into());
+    }
+    find_profile(&mut p, id)?;
+    p.list.retain(|x| x.id != id);
+    if p.active == id {
+        p.active = p.list[0].id.clone();
+    }
+    save_profiles(&p)?;
+    let _ = fs::remove_dir_all(profile_dir(id));
+    Ok(())
+}
+
+fn set_avatar_from(id: &str, path: &Path) -> Result<(), String> {
+    let meta = fs::metadata(path).map_err(|e| format!("Could not read that file: {e}"))?;
+    if !meta.is_file() {
+        return Err("That is not a file.".into());
+    }
+    if meta.len() > MAX_AVATAR_BYTES {
+        return Err("That picture is over 4 MB. Please choose a smaller one.".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Could not read that file: {e}"))?;
+    let name = match image_kind(&bytes) {
+        Some(n) => n.replace("background.", "avatar."),
+        None => return Err("That does not look like a PNG, JPEG, GIF or WebP picture.".into()),
+    };
+    let mut p = load_profiles();
+    let prof = find_profile(&mut p, id)?;
+    let dir = profile_dir(id);
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    for old in ["avatar.png", "avatar.jpg", "avatar.gif", "avatar.webp"] {
+        let _ = fs::remove_file(dir.join(old));
+    }
+    fs::write(dir.join(&name), &bytes).map_err(|e| e.to_string())?;
+    prof.avatar = Some(name);
+    save_profiles(&p)
+}
+
+fn clear_avatar_of(id: &str) -> Result<(), String> {
+    let mut p = load_profiles();
+    let prof = find_profile(&mut p, id)?;
+    prof.avatar = None;
+    for old in ["avatar.png", "avatar.jpg", "avatar.gif", "avatar.webp"] {
+        let _ = fs::remove_file(profile_dir(id).join(old));
+    }
+    save_profiles(&p)
+}
+
+fn read_avatar_bytes(id: &str) -> Result<Vec<u8>, String> {
+    let p = load_profiles();
+    let name = p.list.iter().find(|x| x.id == id).and_then(|x| x.avatar.clone()).ok_or("No picture.")?;
+    if avatar_mime(&name).is_none() {
+        return Err("The saved picture name is not valid.".into());
+    }
+    fs::read(profile_dir(id).join(name)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_profiles() -> ProfilesView {
+    profiles_view()
+}
+
+#[tauri::command]
+fn create_profile(name: String) -> Result<ProfilesView, String> {
+    create_profile_named(&name)?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn rename_profile(id: String, name: String) -> Result<ProfilesView, String> {
+    let name = clean_name(&name)?;
+    let mut p = load_profiles();
+    find_profile(&mut p, &id)?.name = name;
+    save_profiles(&p)?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn switch_profile(id: String) -> Result<ProfilesView, String> {
+    let mut p = load_profiles();
+    find_profile(&mut p, &id)?;
+    p.active = id;
+    save_profiles(&p)?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn delete_profile(id: String) -> Result<ProfilesView, String> {
+    delete_profile_by_id(&id)?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn set_profile_avatar(id: String, path: String) -> Result<ProfilesView, String> {
+    set_avatar_from(&id, Path::new(&path))?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn clear_profile_avatar(id: String) -> Result<ProfilesView, String> {
+    clear_avatar_of(&id)?;
+    Ok(profiles_view())
+}
+
+#[tauri::command]
+fn read_profile_avatar(id: String) -> Result<tauri::ipc::Response, String> {
+    read_avatar_bytes(&id).map(tauri::ipc::Response::new)
+}
+
 // ---------- settings ----------
 
 fn default_mode() -> String {
@@ -1155,14 +1429,13 @@ struct Settings {
     /// Show each app's download total on its tile. On unless the user turns it off.
     #[serde(default = "default_true")]
     show_downloads: bool,
-    /// The user's own background picture (a file in the launcher's own folder), if any.
-    #[serde(default)]
+    /// Older versions kept the background here. It now belongs to a profile; these are only read once,
+    /// to move an existing background into the first profile, and are no longer written.
+    #[serde(default, skip_serializing)]
     bg_file: Option<String>,
-    /// How much the picture is dimmed, 0 to 90 (percent).
-    #[serde(default = "default_dim")]
+    #[serde(default = "default_dim", skip_serializing)]
     bg_dim: u8,
-    /// How much the picture is blurred, 0 to 20 (pixels).
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     bg_blur: u8,
 }
 
@@ -2169,6 +2442,7 @@ struct SettingsView {
 
 fn settings_view() -> SettingsView {
     let settings = load_settings();
+    let look = load_look();
     let mut folders: Vec<FolderInfo> = default_scan_folders()
         .into_iter()
         .map(|p| FolderInfo { exists: p.is_dir(), path: p.to_string_lossy().into_owned(), custom: false })
@@ -2185,10 +2459,10 @@ fn settings_view() -> SettingsView {
         archive_enabled: settings.archive_enabled,
         show_status: settings.show_status,
         show_downloads: settings.show_downloads,
-        bg_has: settings.bg_file.is_some(),
-        bg_mime: settings.bg_file.as_deref().and_then(background_mime).map(str::to_string),
-        bg_dim: settings.bg_dim.min(90),
-        bg_blur: settings.bg_blur.min(20),
+        bg_has: look.bg_file.is_some(),
+        bg_mime: look.bg_file.as_deref().and_then(background_mime).map(str::to_string),
+        bg_dim: look.bg_dim.min(90),
+        bg_blur: look.bg_blur.min(20),
         scanning: scanning_enabled(&settings),
         existing_mode: settings.existing_mode,
         search_folders: settings.search_folders,
@@ -2324,6 +2598,14 @@ pub fn run() {
             install_app,
             list_versions,
             check_launcher,
+            list_profiles,
+            create_profile,
+            rename_profile,
+            switch_profile,
+            delete_profile,
+            set_profile_avatar,
+            clear_profile_avatar,
+            read_profile_avatar,
             launcher_versions,
             install_launcher,
             open_launcher_releases,
@@ -2931,6 +3213,72 @@ mod tests {
     }
 
     #[test]
+    fn profiles_keep_their_own_name_picture_and_background() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-profiles-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        std::env::set_var("HOPPER_DATA_DIR", &data);
+        let png: Vec<u8> = [&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A][..], &[0; 16]].concat();
+        let put = |name: &str, bytes: &[u8]| { let p = root.join(name); fs::write(&p, bytes).unwrap(); p };
+
+        // An older version's background is moved into the first profile, not lost.
+        fs::create_dir_all(data.join("background")).unwrap();
+        fs::write(data.join("background/background.png"), &png).unwrap();
+        fs::write(data.join("settings.json"), r#"{"first_run_done":true,"bg_file":"background.png","bg_dim":40,"bg_blur":3}"#).unwrap();
+        let v = profiles_view();
+        assert_eq!((v.active.as_str(), v.profiles.len(), v.profiles[0].name.as_str()), ("default", 1, "Player"));
+        let s = settings_view();
+        assert_eq!((s.bg_has, s.bg_dim, s.bg_blur), (true, 40, 3));
+        assert_eq!(read_background_bytes().unwrap(), png);
+        assert!(!data.join("background").exists());
+
+        // A second profile starts plain and has its own look; the first keeps its picture.
+        create_profile_named("  Gamehopper  ").unwrap();
+        let second = profiles_view().profiles[1].id.clone();
+        assert_eq!(profiles_view().profiles[1].name, "Gamehopper");
+        let mut p = load_profiles();
+        p.active = second.clone();
+        save_profiles(&p).unwrap();
+        let s = settings_view();
+        assert_eq!((s.bg_has, s.bg_dim, s.bg_blur), (false, 55, 0));
+        set_background_from(&put("two.png", &png)).unwrap();
+        set_background_look(10, 0).unwrap();
+        p.active = "default".into();
+        save_profiles(&p).unwrap();
+        assert_eq!((settings_view().bg_dim, settings_view().bg_blur), (40, 3), "switching profiles changed another profile's look");
+
+        // Pictures: only real pictures, and only up to the size limit; clearing removes the file.
+        assert!(set_avatar_from("default", &put("fake.png", b"words")).is_err());
+        set_avatar_from("default", &put("me.png", &png)).unwrap();
+        assert_eq!(profiles_view().profiles[0].avatar_mime.as_deref(), Some("image/png"));
+        assert_eq!(read_avatar_bytes("default").unwrap(), png);
+        assert!(read_avatar_bytes(&second).is_err(), "one profile must not show another's picture");
+        clear_avatar_of("default").unwrap();
+        assert!(read_avatar_bytes("default").is_err());
+
+        // Names are checked; an unknown id is refused; the last profile can't be deleted.
+        assert!(clean_name("   ").is_err());
+        assert!(clean_name(&"x".repeat(25)).is_err());
+        assert!(delete_profile_by_id("nope").is_err());
+        delete_profile_by_id(&second).unwrap();
+        assert!(!profile_dir(&second).exists());
+        assert_eq!(profiles_view().profiles.len(), 1);
+        assert!(delete_profile_by_id("default").is_err());
+        // Deleting the active profile moves on to another.
+        create_profile_named("Guest").unwrap();
+        let guest = profiles_view().profiles[1].id.clone();
+        let mut p = load_profiles();
+        p.active = guest.clone();
+        save_profiles(&p).unwrap();
+        delete_profile_by_id(&guest).unwrap();
+        assert_eq!(profiles_view().active, "default");
+        // A tampered profile id can't point outside the profiles folder.
+        assert_eq!(profile_dir("../../x"), data.join("profiles/default"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn refreshing_the_totals_on_demand_updates_them_and_never_blanks_them() {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let root = std::env::temp_dir().join(format!("hopper-refresh-{}", std::process::id()));
@@ -3121,7 +3469,7 @@ mod tests {
         set_background_from(&put("my wallpaper.png", &png)).unwrap();
         let v = settings_view();
         assert_eq!((v.bg_has, v.bg_mime.as_deref()), (true, Some("image/png")));
-        assert!(root.join("data/background/background.png").is_file());
+        assert!(root.join("data/profiles/default/background/background.png").is_file());
         assert_eq!(read_background_bytes().unwrap(), png);
         // The original can now move or vanish: the picture keeps working.
         fs::remove_file(root.join("in/my wallpaper.png")).unwrap();
@@ -3132,13 +3480,13 @@ mod tests {
         jpg.extend_from_slice(b"jpeg-ish");
         set_background_from(&put("photo.jpeg", &jpg)).unwrap();
         assert_eq!(settings_view().bg_mime.as_deref(), Some("image/jpeg"));
-        assert!(!root.join("data/background/background.png").exists(), "the old picture was left behind");
+        assert!(!root.join("data/profiles/default/background/background.png").exists(), "the old picture was left behind");
         let mut webp = b"RIFF".to_vec();
         webp.extend_from_slice(&[0, 0, 0, 0]);
         webp.extend_from_slice(b"WEBPVP8 ");
         set_background_from(&put("pic.webp", &webp)).unwrap();
         assert_eq!(settings_view().bg_mime.as_deref(), Some("image/webp"));
-        assert_eq!(fs::read_dir(root.join("data/background")).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.join("data/profiles/default/background")).unwrap().count(), 1);
 
         // Dim and blur are kept within their limits.
         set_background_look(200, 99).unwrap();
@@ -3148,9 +3496,9 @@ mod tests {
         assert_eq!((settings_view().bg_dim, settings_view().bg_blur), (30, 4));
 
         // A tampered settings file cannot make the launcher read some other file.
-        let mut st = load_settings();
+        let mut st = load_look();
         st.bg_file = Some("../../etc/passwd".into());
-        save_settings(&st).unwrap();
+        save_look(&st).unwrap();
         assert!(read_background_bytes().unwrap_err().contains("not valid"));
         assert_eq!(settings_view().bg_mime, None);
 
@@ -3158,7 +3506,7 @@ mod tests {
         set_background_from(&put("again.png", &png)).unwrap();
         clear_background_files().unwrap();
         assert!(!settings_view().bg_has);
-        assert_eq!(fs::read_dir(root.join("data/background")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.join("data/profiles/default/background")).unwrap().count(), 0);
         assert!(read_background_bytes().is_err());
 
         let _ = fs::remove_dir_all(&root);
