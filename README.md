@@ -65,7 +65,7 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ### [**Download the latest release**](../../releases/latest)
 
-The current version is **0.5.0** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.5.0)).
+The current version is **0.5.1** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.5.1)).
 The big link above always opens the newest release, so it stays current when new versions come out. Older
 versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
 the file for your system:
@@ -74,9 +74,9 @@ the file for your system:
 |---|---|---|
 | Linux (x86_64) | `Hopper-Launcher-<version>-x86_64.AppImage` | Mark it as executable, then run it. If your system has no FUSE, run it with `--appimage-extract-and-run`. |
 | Windows (64-bit) | `Hopper-Launcher-Setup-<version>-x64.exe` or `Hopper-Launcher-<version>-windows-x64.zip` | The installer sets it up; the zip is a single program you can run from anywhere. Untested by the developer. |
-| Android | none yet | An APK exists only as a test build and has never been run on a phone. It is not released. |
+| Android (64-bit phones and tablets, Android 7+) | `Hopper-Launcher-<version>-android-arm64.apk` | New and never tested on a phone by the developer. Open the file to install; Android asks once to allow installs from your browser or files app. |
 
-Every release also has checksum files: `SHA256SUMS` for Linux and `SHA256SUMS-windows` for Windows.
+Every release also has checksum files: `SHA256SUMS` for Linux, `SHA256SUMS-windows` for Windows and `SHA256SUMS-android` for Android.
 To check a download, run `sha256sum -c SHA256SUMS` on Linux, or
 `Get-FileHash <file> -Algorithm SHA256` in Windows PowerShell and compare it with the checksum file.
 Please also scan the file with [VirusTotal](https://www.virustotal.com) first (see the warning above).
@@ -200,8 +200,8 @@ cargo build --release
 - **Linux:** working, and tested by the developer.
 - **Windows:** the installer and zip are built automatically on GitHub and compile cleanly, but have not
   been run or tested by the developer.
-- **Android:** a debug APK can be built with the manual "Android test build" workflow. It builds and
-  contains the install and launch plugin, but it has never been run on a phone and is not released.
+- **Android:** a signed APK is built by the release workflow (see `ANDROID.md`). It builds and contains the
+  install and launch plugin, but it has never been run on a phone, so expect rough edges.
 
 **Releases.** Pushing a version tag such as `v0.3.0` runs the Release workflow. It runs the tests, builds
 the Linux AppImage and the Windows installer and zip, writes the checksum files, and attaches everything
