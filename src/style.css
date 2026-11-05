@@ -20,7 +20,7 @@
 body {
   background: var(--bg); color: var(--text);
   font: 16px/24px system-ui, "Segoe UI", sans-serif;
-  padding: 144px 32px 32px; max-width: 1120px; margin: 0 auto;
+  padding: 164px 32px 32px; max-width: 1120px; margin: 0 auto;
 }
 header { display: flex; justify-content: space-between; align-items: center; min-height: 64px; flex-wrap: wrap; gap: 16px; }
 h1 { font-size: 32px; line-height: 40px; font-weight: 300; letter-spacing: 2px; text-transform: lowercase; }
@@ -245,9 +245,9 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .vrow .go { width: auto; white-space: nowrap; }
 
 /* Local profiles */
-.profilechip { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 4px; border-radius: 16px; font-size: 13px; background: var(--panel); }
+.profilechip { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 16px 0 5px; border-radius: 20px; font-size: 16px; background: var(--panel); margin-bottom: 4px; }
 .profilechip:hover { border-color: var(--accent); }
-.avatar { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; overflow: hidden; background: var(--accent); color: var(--accent-ink, #00141a); font-weight: 700; font-size: 12px; line-height: 24px; }
+.avatar { flex: none; display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--accent); color: var(--accent-ink, #00141a); font-weight: 700; font-size: 14px; line-height: 30px; }
 .avatar.big { width: 48px; height: 48px; font-size: 20px; line-height: 48px; }
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .prow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -272,7 +272,7 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 .profilenote[hidden] { display: none; }
 
 /* The walls: issues on the left, discussions on the right, only when the window is wide enough to have room */
-.wall { --wallw: min(380px, calc((100vw - 1120px) / 2 - 40px)); display: none; position: fixed; top: 152px; bottom: 24px; width: var(--wallw); flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; z-index: 1; }
+.wall { --wallw: min(380px, calc((100vw - 1120px) / 2 - 40px)); display: none; position: fixed; top: 172px; bottom: 24px; width: var(--wallw); flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; z-index: 1; }
 .wall-left { left: calc((100vw - 1120px) / 2 - var(--wallw) - 8px); }
 .wall-right { right: calc((100vw - 1120px) / 2 - var(--wallw) - 8px); }
 @media (min-width: 1680px) { .wall:not([hidden]) { display: flex; } }
