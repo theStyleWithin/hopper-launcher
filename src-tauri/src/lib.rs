@@ -941,9 +941,93 @@ fn remove_old_builds(dir: &Path) {
     }
 }
 
-fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String> {
+/// Tags are used inside a web address, so only ordinary version-tag characters are allowed.
+fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty() && tag.len() <= 100 && tag.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+}
+
+/// One specific published release, by its tag (used to go back to an older version).
+fn release_by_tag(repo: &str, tag: &str) -> Result<Release, String> {
+    if !valid_tag(tag) {
+        return Err("That is not a valid version name.".into());
+    }
+    let url = format!("{}/repos/{repo}/releases/tags/{tag}", api_base());
+    let resp = http().get(&url)
+        .set("User-Agent", "hopper-launcher")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(404, _) => format!("Version {tag} is no longer published."),
+            ureq::Error::Status(code, _) => format!("GitHub error (HTTP {code})"),
+            other => format!("Can't reach GitHub right now ({other})"),
+        })?;
+    resp.into_json().map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+struct ListedRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<Asset>,
+}
+
+#[derive(Serialize, Debug)]
+struct VersionInfo {
+    tag: String,
+    /// Publish date, "YYYY-MM-DD".
+    date: Option<String>,
+    prerelease: bool,
+    /// Builds of this version that suit this device, best first.
+    builds: Vec<Build>,
+}
+
+/// Every published version that has a build for this device, newest first.
+fn list_versions_blocking(app: &AppEntry) -> Result<Vec<VersionInfo>, String> {
     let dev = device::detect();
-    let release = latest_release(&app.repo)?;
+    let url = format!("{}/repos/{}/releases?per_page=30", api_base(), app.repo);
+    let resp = http().get(&url)
+        .set("User-Agent", "hopper-launcher")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("GitHub error (HTTP {code})"),
+            other => format!("Can't reach GitHub right now ({other})"),
+        })?;
+    let listed: Vec<ListedRelease> = resp.into_json().map_err(|e| e.to_string())?;
+    Ok(listed
+        .into_iter()
+        .filter(|r| !r.draft && valid_tag(&r.tag_name))
+        .filter_map(|r| {
+            let builds = builds_for(&r.assets, &dev.os, &dev.arch);
+            (!builds.is_empty()).then(|| VersionInfo {
+                tag: r.tag_name,
+                date: r.published_at.map(|d| d.chars().take(10).collect()),
+                prerelease: r.prerelease,
+                builds,
+            })
+        })
+        .collect())
+}
+
+/// `tag` None installs the latest release; Some(tag) installs that older (or any published) version.
+fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<InstallResult, String> {
+    let dev = device::detect();
+    let release = match tag {
+        Some(t) => release_by_tag(&app.repo, t)?,
+        None => latest_release(&app.repo)?,
+    };
+    // Going back to an older version: stop the launcher nagging to "update" straight away. It asks again
+    // when something newer than the latest release appears.
+    let ignored: Option<String> = match tag {
+        Some(_) => latest_release(&app.repo).ok().map(|l| l.tag_name).filter(|l| *l != release.tag_name),
+        None => None,
+    };
     // Only files that really are builds for this device can be installed.
     let build = builds_for(&release.assets, &dev.os, &dev.arch)
         .into_iter()
@@ -1004,7 +1088,7 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
             .ok_or("Could not read the app's package name")?;
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: None },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: ignored.clone() },
         );
         save_state(&state)?;
         android_call("installApk", serde_json::json!({ "path": path_text }))?;
@@ -1018,7 +1102,7 @@ fn install_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String>
     } else {
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: None },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: ignored.clone() },
         );
         save_state(&state)?;
     }
@@ -1680,10 +1764,18 @@ async fn check_releases() -> Result<Vec<ReleaseInfo>, String> {
 }
 
 #[tauri::command]
-async fn install_app(id: String, file: String) -> Result<InstallResult, String> {
+async fn list_versions(id: String) -> Result<Vec<VersionInfo>, String> {
+    let app = find_app(&id)?;
+    tauri::async_runtime::spawn_blocking(move || list_versions_blocking(&app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn install_app(id: String, file: String, tag: Option<String>) -> Result<InstallResult, String> {
     check_update_allowed(&id)?;
     let app = find_app(&id)?;
-    tauri::async_runtime::spawn_blocking(move || install_blocking(&app, &file))
+    tauri::async_runtime::spawn_blocking(move || install_blocking(&app, &file, tag.as_deref()))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2022,6 +2114,7 @@ pub fn run() {
             list_apps,
             check_releases,
             install_app,
+            list_versions,
             launch_app,
             uninstall_app,
             skip_update,
@@ -3044,11 +3137,11 @@ mod tests {
         assert_eq!(answers(), before, "an unchanged release was downloaded again");
 
         // Installing a file that is not a build for this device is refused.
-        assert!(install_blocking(&app, "App-debug-x86_64.AppImage").is_err());
+        assert!(install_blocking(&app, "App-debug-x86_64.AppImage", None).is_err());
         assert_eq!(status(), (false, None));
 
         // A good download installs, verifies and becomes launchable.
-        let r = install_blocking(&app, "App-x86_64.AppImage").unwrap();
+        let r = install_blocking(&app, "App-x86_64.AppImage", None).unwrap();
         assert_eq!((r.tag.as_str(), r.verified, r.handed_off), ("v1", true, false));
         assert_eq!(status(), (true, Some("v1".into())));
 
@@ -3076,19 +3169,47 @@ mod tests {
         let before = answers();
         assert_eq!(latest_release("me/app").unwrap().tag_name, "v2");
         assert_eq!(answers(), before + 1, "a changed release was not downloaded");
-        let err = install_blocking(&app, "App-x86_64.AppImage").unwrap_err();
+        let err = install_blocking(&app, "App-x86_64.AppImage", None).unwrap_err();
         assert!(err.contains("checksum"), "{err}");
         assert_eq!(status(), (true, Some("v1".into())));
 
         // A good update replaces the old version and leaves only one file behind.
         let v2: &[u8] = b"#!/bin/sh\nexit 0\n";
         publish(port, &routes, "v2", v2, &sha(v2));
-        assert_eq!(install_blocking(&app, "App-x86_64.AppImage").unwrap().tag, "v2");
+        assert_eq!(install_blocking(&app, "App-x86_64.AppImage", None).unwrap().tag, "v2");
         assert_eq!(status(), (true, Some("v2".into())));
         assert_eq!(list_apps_from(vec![app.clone()])[0].ignored_version, None, "installing should clear a skipped version");
         let left: Vec<_> = fs::read_dir(data.join("apps/app")).unwrap().flatten().map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 2, "expected the new program and the settings folder, got {left:?}");
         assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "an update touched the app's settings");
+
+        // Rolling back: every published version is listed (drafts are not), and an older one can be installed.
+        {
+            let asset = |f: &str| serde_json::json!({"name": f, "size": 4, "browser_download_url": format!("http://127.0.0.1:{port}/dl/{f}")});
+            let assets = serde_json::json!([asset("App-x86_64.AppImage"), asset("SHA256SUMS")]);
+            let mut r = routes.lock().unwrap();
+            r.insert(
+                "/repos/me/app/releases?per_page=30".into(),
+                serde_json::to_vec(&serde_json::json!([
+                    {"tag_name": "v3-draft", "draft": true, "assets": assets},
+                    {"tag_name": "v2", "published_at": "2026-02-01T10:00:00Z", "assets": assets},
+                    {"tag_name": "v1", "published_at": "2026-01-01T10:00:00Z", "assets": assets},
+                    {"tag_name": "v0", "published_at": "2025-12-01T10:00:00Z", "assets": []}
+                ])).unwrap(),
+            );
+            r.insert("/repos/me/app/releases/tags/v1".into(), serde_json::to_vec(&serde_json::json!({"tag_name": "v1", "assets": assets})).unwrap());
+            r.insert("/dl/App-x86_64.AppImage".into(), v1.to_vec());
+            r.insert("/dl/SHA256SUMS".into(), format!("{}  App-x86_64.AppImage\n", sha(v1)).into_bytes());
+        }
+        let versions = list_versions_blocking(&app).unwrap();
+        assert_eq!(versions.iter().map(|v| v.tag.as_str()).collect::<Vec<_>>(), vec!["v2", "v1"]);
+        assert_eq!(versions[1].date.as_deref(), Some("2026-01-01"));
+        assert!(install_blocking(&app, "App-x86_64.AppImage", Some("../etc")).is_err(), "a tag must not be able to change the address");
+        let back = install_blocking(&app, "App-x86_64.AppImage", Some("v1")).unwrap();
+        assert_eq!((back.tag.as_str(), back.verified), ("v1", true));
+        assert_eq!(status(), (true, Some("v1".into())));
+        assert_eq!(list_apps_from(vec![app.clone()])[0].ignored_version.as_deref(), Some("v2"), "a rollback should not be nagged to update at once");
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "a rollback touched the app's settings");
 
         // Uninstalling removes the program but keeps the app's own settings.
         uninstall_entry(&app).unwrap();

@@ -128,7 +128,10 @@ function tile(app) {
     // In the glass look the label is a compact cross (so full names still fit); the words are still there for hover and screen readers.
     const x = button(glass ? "✕" : word, "x", () => uninstall(app), working);
     if (glass) { x.title = word; x.setAttribute("aria-label", `${word} ${app.name}`); }
-    top.append(x);
+    const hist = button("⟲", "x", () => openVersions(app), working);
+    hist.title = "Versions and rollback: go back to an older version";
+    hist.setAttribute("aria-label", `Versions and rollback for ${app.name}`);
+    top.append(hist, x);
   }
 
   const sel = el("select");
@@ -209,12 +212,12 @@ async function loadApps() {
   render();
 }
 
-async function install(app, file) {
+async function install(app, file, tag = null) {
   busy.add(app.id);
-  say(`Downloading ${app.name}…`);
+  say(`Downloading ${app.name}${tag ? " " + tag : ""}…`);
   render();
   try {
-    const r = await invoke("install_app", { id: app.id, file });
+    const r = await invoke("install_app", { id: app.id, file, tag });
     if (r.handed_off) say(`${app.name} ${r.tag}: opened its installer. Finish the setup there.`);
     else say(`${app.name} ${r.tag} installed` + (r.verified ? " (checksum verified)" : " (no checksum was published)"));
   } catch (e) {
@@ -228,6 +231,44 @@ async function install(app, file) {
 async function update(app, file) {
   if (app.adopted && !confirm(`You are using your own copy of ${app.name}:\n${app.path}\n\nDownload the new version into the launcher's folder and switch to it? Your file stays where it is.`)) return;
   await install(app, file);
+}
+
+// ---------- versions and rollback ----------
+
+const versionsDialog = $("versions");
+versionsDialog.addEventListener("cancel", (e) => { e.preventDefault(); versionsDialog.close(); });
+
+/** Lists every published version of one app that has a build for this device, so the user can go back to one. */
+async function openVersions(app) {
+  const sheet = el("div", { className: "sheet" });
+  sheet.append(el("h2", { id: "versions-title", textContent: `${app.name}: versions` }));
+  sheet.append(el("p", { textContent: "If an update misbehaves, pick an older version to go back to it. Your settings and data are not touched. The launcher won't ask you to update again until something newer than the latest release appears." }));
+  const body = el("div", { className: "vlist" }, el("p", { textContent: "Loading versions…" }));
+  sheet.append(body, el("div", { className: "foot" }, button("Close", "ghost", () => versionsDialog.close())));
+  versionsDialog.replaceChildren(sheet);
+  if (!versionsDialog.open) versionsDialog.showModal();
+  try {
+    const list = await invoke("list_versions", { id: app.id });
+    if (!list.length) { body.replaceChildren(el("p", { textContent: "No published versions for this device were found." })); return; }
+    body.replaceChildren(...list.map((v) => {
+      const here = app.version === v.tag;
+      const meta = [v.date, v.prerelease ? "pre-release" : null, here ? "installed now" : null].filter(Boolean).join(" · ");
+      const pick = el("select");
+      pick.setAttribute("aria-label", `Build of ${v.tag}`);
+      v.builds.forEach((b, i) => pick.add(new Option((i === 0 ? "Recommended: " : "") + KIND[b.kind], b.file)));
+      const go = button(here ? "Reinstall" : "Install this version", "go alt", async () => {
+        const msg = here ? `Reinstall ${app.name} ${v.tag}?` : `Switch ${app.name} to ${v.tag}? Your settings and data are kept.`;
+        if (!confirm(msg)) return;
+        versionsDialog.close();
+        await install(app, pick.value, v.tag);
+      }, busy.has(app.id));
+      return el("div", { className: "vrow" },
+        el("div", { className: "vname" }, el("b", { textContent: v.tag }), el("span", { textContent: meta })),
+        pick, go);
+    }));
+  } catch (e) {
+    body.replaceChildren(el("p", { className: "bgwarn", textContent: String(e) }));
+  }
 }
 
 async function launch(app) {

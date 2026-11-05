@@ -65,7 +65,7 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ### [**Download the latest release**](../../releases/latest)
 
-The current version is **0.3.1** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.3.1)).
+The current version is **0.4.0** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.4.0)).
 The big link above always opens the newest release, so it stays current when new versions come out. Older
 versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
 the file for your system:
@@ -124,6 +124,10 @@ page says which systems it supports, and the launcher only shows the builds that
   launcher is idle and in front, and rest on their first frame whenever you use the mouse or keyboard (or
   when Blur is on), so launching apps never competes with the animation. There is an "Animate the GIF"
   switch to turn it off. Desktop for now.
+- **Rollback.** Every installed app has a small ⟲ button on its tile. It lists every version that app has
+  published for your system, and you can install any of them, so you can go back if an update misbehaves.
+  Your settings and data are not touched, checksums are still checked, and the launcher stops asking you to
+  update until something newer than the latest release appears.
 - **Look.** Settings → Look switches between the classic look (the default) and clear glass-bubble icons
   beside each app's name.
 - **Download counts.** A small green number on each tile shows how many times that app has been downloaded,
