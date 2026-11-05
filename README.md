@@ -65,7 +65,7 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ### [**Download the latest release**](../../releases/latest)
 
-The current version is **0.3.0** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.3.0)).
+The current version is **0.3.1** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.3.1)).
 The big link above always opens the newest release, so it stays current when new versions come out. Older
 versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
 the file for your system:
@@ -91,7 +91,7 @@ Please also scan the file with [VirusTotal](https://www.virustotal.com) first (s
 | HopTunes | A sleek, minimalist media player |
 | sudo make art | Offline, local-only design tool |
 | sudo make music | Offline AI music generation |
-| Desktop College Dorms | Offline AI character creator and chat rooms (in development, no release yet) |
+| Desktop College Dorms | Offline AI character creator and chat rooms (early release, v0.1.0) |
 
 All of them are free to use. The launcher itself collects no data and needs no account. Each app's own
 page says which systems it supports, and the launcher only shows the builds that suit your device.
