@@ -65,7 +65,7 @@ These pictures use sample data. The versions and installs shown are made up for 
 
 ### [**Download the latest release**](../../releases/latest)
 
-The current version is **0.5.2** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.5.2)).
+The current version is **0.5.3** ([direct link](https://github.com/theStyleWithin/hopper-launcher/releases/tag/v0.5.3)).
 The big link above always opens the newest release, so it stays current when new versions come out. Older
 versions are on the [Releases page](../../releases). On the latest release, scroll to **Assets** and pick
 the file for your system:
