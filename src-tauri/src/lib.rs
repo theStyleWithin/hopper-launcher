@@ -54,6 +54,9 @@ struct InstalledApp {
     /// A release the user chose to skip. The update prompt stays away until a newer one appears.
     #[serde(default)]
     ignored_version: Option<String>,
+    /// The release file this was installed from, so updates stay on the same kind of build.
+    #[serde(default)]
+    build: Option<String>,
 }
 
 type State = HashMap<String, InstalledApp>;
@@ -71,6 +74,8 @@ struct AppInfo {
     path: Option<String>,
     /// The release the user skipped, if any.
     ignored_version: Option<String>,
+    /// The release file the installed copy came from (e.g. which AppImage), when known.
+    build: Option<String>,
 }
 
 /// What we know about where an app can be fetched from right now.
@@ -1094,10 +1099,14 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
     };
     // Going back to an older version: stop the launcher nagging to "update" straight away. It asks again
     // when something newer than the latest release appears.
+    let before = load_state().get(&app.id).filter(|s| !s.adopted).cloned();
     let ignored: Option<String> = match tag {
+        // Only switching to another build of the version already installed: nothing about updates changes.
+        Some(_) if before.as_ref().map_or(false, |b| b.tag == release.tag_name) => before.as_ref().and_then(|b| b.ignored_version.clone()),
         Some(_) => latest_release(&app.repo).ok().map(|l| l.tag_name).filter(|l| *l != release.tag_name),
         None => None,
     };
+    let old_path = before.as_ref().map(|b| b.path.clone());
     // Only files that really are builds for this device can be installed.
     let build = builds_for(&release.assets, &dev.os, &dev.arch)
         .into_iter()
@@ -1142,6 +1151,18 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
         let dest = app_dir.join(file);
         fs::rename(&part_file, &dest).map_err(|e| fail(e.to_string()))?;
         make_executable(&dest).map_err(&fail)?;
+        // Switching to a different file (say an AMD build): an AppImage keeps its own settings in folders named
+        // after the file, so they move to the new name and the app picks up where it left off.
+        if let Some(old) = old_path.filter(|o| o.parent() == Some(app_dir.as_path()) && *o != dest) {
+            if let (Some(old_name), Some(new_name)) = (old.file_name().and_then(|n| n.to_str()), dest.file_name().and_then(|n| n.to_str())) {
+                for suffix in [".home", ".config"] {
+                    let (from, to) = (app_dir.join(format!("{old_name}{suffix}")), app_dir.join(format!("{new_name}{suffix}")));
+                    if from.is_dir() && !to.exists() {
+                        let _ = fs::rename(&from, &to);
+                    }
+                }
+            }
+        }
         dest
     };
     let _ = fs::remove_dir_all(&part_dir);
@@ -1158,7 +1179,7 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
             .ok_or("Could not read the app's package name")?;
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: ignored.clone() },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: ignored.clone(), build: Some(file.to_string()) },
         );
         save_state(&state)?;
         android_call("installApk", serde_json::json!({ "path": path_text }))?;
@@ -1172,7 +1193,7 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
     } else {
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: ignored.clone() },
+            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: ignored.clone(), build: Some(file.to_string()) },
         );
         save_state(&state)?;
     }
@@ -2064,6 +2085,7 @@ fn adopt_entry(app: &AppEntry, path: &Path) -> Result<(), String> {
             adopted: true,
             package: None,
             ignored_version: None,
+            build: None,
         },
     );
     save_state(&state)
@@ -2088,6 +2110,7 @@ fn list_apps_from(entries: Vec<AppEntry>) -> Vec<AppInfo> {
                 folder: managed.map_or(false, |s| s.folder),
                 adopted: managed.map_or(false, |s| s.adopted),
                 ignored_version: managed.and_then(|s| s.ignored_version.clone()),
+                build: managed.and_then(|s| s.build.clone()),
                 path: managed.map(|s| s.path.to_string_lossy().into_owned()),
                 entry,
             }
@@ -2860,6 +2883,7 @@ mod tests {
             adopted: false,
             path: None,
             ignored_version: None,
+            build: None,
         };
         let ids = |apps: &[AppInfo]| apps.iter().map(|a| a.entry.id.clone()).collect::<Vec<_>>();
         let mut apps = vec![mk("a"), mk("b"), mk("c"), mk("d")]; // already alphabetical
@@ -3813,7 +3837,7 @@ mod tests {
         fs::create_dir_all(managed.parent().unwrap()).unwrap();
         script(&managed, "#!/bin/sh\n", 0o755);
         let mut st = load_state();
-        st.insert("hopcast".into(), InstalledApp { tag: "v0.1.15".into(), path: managed, folder: false, adopted: false, package: None, ignored_version: None });
+        st.insert("hopcast".into(), InstalledApp { tag: "v0.1.15".into(), path: managed, folder: false, adopted: false, package: None, ignored_version: None, build: None });
         save_state(&st).unwrap();
         assert!(adopt_entry(&app, &theirs).unwrap_err().contains("already installed"));
 
@@ -4061,6 +4085,28 @@ mod tests {
         assert_eq!(status(), (true, Some("v1".into())));
         assert_eq!(list_apps_from(vec![app.clone()])[0].ignored_version.as_deref(), Some("v2"), "a rollback should not be nagged to update at once");
         assert_eq!(fs::read_to_string(&settings).unwrap(), "mine", "a rollback touched the app's settings");
+
+        // Switching to a different build of the same version (say an AMD AppImage): the app's own settings
+        // folder follows the program, the choice is remembered, and the update choice is left alone.
+        {
+            let asset = |f: &str| serde_json::json!({"name": f, "size": 4, "browser_download_url": format!("http://127.0.0.1:{port}/dl/{f}")});
+            let assets = serde_json::json!([asset("App-x86_64.AppImage"), asset("App-amd-x86_64.AppImage"), asset("SHA256SUMS")]);
+            let mut r = routes.lock().unwrap();
+            r.insert("/repos/me/app/releases/tags/v1".into(), serde_json::to_vec(&serde_json::json!({"tag_name": "v1", "assets": assets})).unwrap());
+            r.insert("/dl/App-amd-x86_64.AppImage".into(), v1.to_vec());
+            r.insert("/dl/SHA256SUMS".into(), format!("{}  App-x86_64.AppImage\n{}  App-amd-x86_64.AppImage\n", sha(v1), sha(v1)).into_bytes());
+        }
+        assert_eq!(list_apps_from(vec![app.clone()])[0].build.as_deref(), Some("App-x86_64.AppImage"));
+        let amd = install_blocking(&app, "App-amd-x86_64.AppImage", Some("v1")).unwrap();
+        assert_eq!((amd.tag.as_str(), amd.verified), ("v1", true));
+        let info = list_apps_from(vec![app.clone()]);
+        assert_eq!((info[0].build.as_deref(), info[0].ignored_version.as_deref()), (Some("App-amd-x86_64.AppImage"), Some("v2")));
+        assert!(data.join("apps/app/App-amd-x86_64.AppImage").is_file());
+        assert!(!data.join("apps/app/App-x86_64.AppImage").exists(), "the old build was left behind");
+        let moved = data.join("apps/app/App-amd-x86_64.AppImage.home/settings.json");
+        assert_eq!(fs::read_to_string(&moved).unwrap(), "mine", "the app's settings did not follow the program");
+        assert!(!data.join("apps/app/App-x86_64.AppImage.home").exists());
+        let settings = moved; // later steps look for the settings wherever they now live
 
         // Uninstalling removes the program but keeps the app's own settings.
         uninstall_entry(&app).unwrap();

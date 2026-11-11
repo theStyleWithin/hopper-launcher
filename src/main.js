@@ -102,6 +102,13 @@ function goneTile(app) {
   return t;
 }
 
+// Builds of one app can differ in more than the file type (an AppImage and an AMD AppImage, say). The kind of
+// build the user installed is remembered, and updates stay on it.
+const variantKey = (name) => String(name || "").toLowerCase().replace(/v?\d+(\.\d+)*/g, "").replace(/[-_.\s]+/g, "-");
+const currentBuild = (app) => app.build || (app.path ? app.path.split(/[\\/]/).pop() : "");
+const sameBuild = (app, builds) => builds.find((b) => variantKey(b.file) === variantKey(currentBuild(app))) || builds[0];
+const buildLabel = (b, all) => KIND[b.kind] + (all.filter((x) => x.kind === b.kind).length > 1 ? `: ${b.file}` : "");
+
 function tile(app) {
   const rel = releases[app.id];
   // Only an app the user does NOT have is replaced. An installed app always keeps its tile and Launch button.
@@ -143,13 +150,21 @@ function tile(app) {
     const ver = app.version ? ` · ${app.version}` : "";
     const getUpdate = () => (app.adopted && inPlace
       ? invoke("open_repo", { id: app.id }).catch((e) => say(String(e), true))
-      : update(app, builds[0].file));
+      : update(app, sameBuild(app, builds).file));
     const canUpdate = !!builds.length || (app.adopted && inPlace);
     if (prompt && canUpdate) {
       // A new release: the main button becomes Update, running what is installed stays one click away.
       sel.add(new Option(`Update available · ${latest}`, "update"));
+      const same = builds.length ? sameBuild(app, builds) : null;
+      builds.filter((b) => b !== same).forEach((b) => sel.add(new Option(`Update and switch to ${buildLabel(b, builds)}`, "switch:" + b.file)));
       sel.add(new Option(`Skip ${latest} (stop asking)`, "skip"));
       sel.onchange = async () => {
+        if (sel.value.startsWith("switch:")) {
+          const file = sel.value.slice(7);
+          sel.value = "update";
+          if (confirm(`Update ${app.name} to ${latest} and switch to ${buildLabel(builds.find((b) => b.file === file), builds)}? Its settings and data are kept.`)) await update(app, file);
+          return;
+        }
         if (sel.value !== "skip") return;
         try { await invoke("skip_update", { id: app.id, tag: latest }); say(`Skipped ${latest}. You will be asked again when a newer release appears.`); }
         catch (e) { say(String(e), true); }
@@ -162,16 +177,35 @@ function tile(app) {
       // The user already said no to this release: Launch stays the main button, and they can change their mind.
       sel.add(new Option(`${mine}${ver} (skipped ${latest})`, "keep"));
       sel.add(new Option(`Update to ${latest}`, "update"));
-      sel.onchange = () => { if (sel.value === "update") getUpdate(); };
+      builds.filter((b) => b !== sameBuild(app, builds)).forEach((b) => sel.add(new Option(`Update and switch to ${buildLabel(b, builds)}`, "switch:" + b.file)));
+      sel.onchange = () => {
+        if (sel.value === "update") getUpdate();
+        else if (sel.value.startsWith("switch:")) { const f = sel.value.slice(7); sel.value = "keep"; if (confirm(`Update ${app.name} to ${latest} and switch to ${buildLabel(builds.find((b) => b.file === f), builds)}? Its settings and data are kept.`)) update(app, f); }
+      };
       sel.disabled = working;
       btns.append(button("Launch", "go", () => launch(app), working));
     } else {
       // If the source is gone or failing, say so quietly: the app still launches, it just cannot update.
       const noUpdates = rel && (rel.source === "gone" || rel.source === "trouble");
       const label = noUpdates ? `${app.version || mine} · can't update` : mine + ver;
-      sel.add(new Option(prompt ? `Update available · ${latest}` : label));
+      sel.add(new Option(prompt ? `Update available · ${latest}` : label, "keep"));
       if (noUpdates) sel.title = "This app's source is not available right now, so it can't be updated. It still launches.";
       sel.disabled = true;
+      // Several builds of the very version that is installed: offer to switch between them.
+      const here = currentBuild(app);
+      if (!noUpdates && !app.adopted && !prompt && builds.length > 1 && latest === app.version) {
+        const now = builds.find((b) => b.file === here) || sameBuild(app, builds);
+        sel.options[0].text = `${label} · ${buildLabel(now, builds)}`;
+        builds.filter((b) => b !== now).forEach((b) => sel.add(new Option(`Switch to ${buildLabel(b, builds)}`, "switch:" + b.file)));
+        sel.disabled = working;
+        sel.title = "Switch this app to a different build. Its settings and data are kept.";
+        sel.onchange = async () => {
+          if (!sel.value.startsWith("switch:")) return;
+          const file = sel.value.slice(7);
+          sel.value = "keep";
+          if (confirm(`Switch ${app.name} to ${buildLabel(builds.find((b) => b.file === file), builds)}? Its settings and data are kept.`)) await install(app, file, app.version);
+        };
+      }
       btns.append(button("Launch", "go", () => launch(app), working));
     }
   } else if (builds.length) {

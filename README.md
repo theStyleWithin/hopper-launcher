@@ -139,6 +139,16 @@ page says which systems it supports, and the launcher only shows the builds that
   there is a switch in Settings.
 
   ![Wide window: issues on the left, the apps in the middle, discussions on the right.](docs/images/walls.png)
+- **If GitHub's rate limit is reached.** GitHub only answers so many questions an hour without signing in. When it
+  says "enough", a note appears at the top with a live countdown to the moment it resets, the launcher stops
+  asking until then (every extra question would be wasted), and everything you have installed keeps
+  launching. When the time is up the note says "It's safe to try again" and the launcher rechecks by itself.
+
+  ![A note at the top counting down to the rate limit reset.](docs/images/rate-limit.png)
+- **Switching builds.** If an app comes in more than one build (for example an AppImage and an AMD AppImage),
+  its dropdown lets you switch to another one. The launcher remembers which kind you chose and keeps updating
+  that kind, and an AppImage's own settings folder moves along with the program so the app picks up where you
+  left off. (Going back to an older version is the ⟲ button.)
 - **Counts button.** "↻ Counts" next to "Check for updates" reads every app's all-time download total from
   GitHub right now, so you can watch the numbers move without checking for updates. If GitHub can't be
   reached, the last numbers stay.
