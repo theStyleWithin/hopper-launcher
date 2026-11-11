@@ -298,3 +298,10 @@ input[type=range] { accent-color: var(--accent); width: 100%; }
 @keyframes updping { 0% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 0 rgba(255, 59, 78, .7); } 70%, 100% { box-shadow: 0 0 0 2px var(--bg), 0 0 0 10px rgba(255, 59, 78, 0); } }
 @media (prefers-reduced-motion: reduce) { .updbadge { animation: none; } }
 #upd-label.hint { color: #ff3b4e; font-weight: 700; letter-spacing: .5px; text-transform: none; font-size: 13px; }
+
+/* GitHub's rate limit: a countdown, then a "safe to try again" note */
+.ratenote { border-color: var(--warn); }
+.ratenote.ok { border-color: var(--ok); }
+.ratenote .count { font-variant-numeric: tabular-nums; font-weight: 700; }
+.ratenote .what { display: grid; gap: 0; }
+.ratenote .what small { color: var(--dim); font-size: 13px; line-height: 20px; }

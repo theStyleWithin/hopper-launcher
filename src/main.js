@@ -180,7 +180,8 @@ function tile(app) {
     btns.append(button(working ? "Installing…" : "Install", "go", () => install(app, sel.value), working));
   } else {
     t.classList.add("off");
-    const why = rel?.source === "offline" ? "You're offline" : rel?.source === "trouble" ? "Can't reach GitHub right now" : rel?.error;
+    const limited = rel?.error === "Rate limit reached";
+    const why = rel?.source === "offline" ? "You're offline" : rel?.source === "trouble" ? "Can't reach GitHub right now" : limited ? "Waiting for GitHub (see top)" : rel?.error;
     sel.add(new Option(why ? why : rel ? `No ${os} build yet` : "Checking GitHub…"));
     sel.disabled = true;
     btns.append(button(rel ? "Unavailable" : "Please wait", "go", null, true));
@@ -379,6 +380,7 @@ async function refresh() {
   } finally {
     $("refresh").disabled = false;
     render();
+    checkRate();
   }
 }
 
@@ -462,6 +464,60 @@ function launcherVersions() {
   };
 }
 
+// ---------- GitHub's rate limit: a countdown, then "safe to try again" ----------
+
+const rate = { reset: 0, skew: 0, was: false, done: "", timer: null };
+
+function clock(ms) {
+  const t = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+async function checkRate() {
+  try {
+    const s = await invoke("rate_limit_status");
+    rate.skew = s.now * 1000 - Date.now();
+    rate.reset = s.reset_at ? s.reset_at * 1000 : 0;
+  } catch (e) { /* no news is no limit */ }
+  renderRate();
+}
+
+function renderRate() {
+  const box = $("ratenote");
+  const left = rate.reset ? rate.reset - (Date.now() + rate.skew) : 0;
+  if (left > 0) {
+    if (!rate.was) { rate.was = true; rate.done = ""; }
+    box.className = "selfnote ratenote";
+    box.hidden = false;
+    const when = new Date(rate.reset).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    box.replaceChildren(
+      el("div", { className: "what" },
+        el("span", {}, "GitHub's rate limit is reached. It resets in ", el("span", { className: "count", textContent: clock(left) }), ` (about ${when}).`),
+        el("small", { textContent: "Updates, download counts and the walls are paused until then. Everything you have installed still launches, and the launcher will check again by itself." })));
+    if (!rate.timer) rate.timer = setInterval(renderRate, 1000);
+    return;
+  }
+  if (rate.timer) { clearInterval(rate.timer); rate.timer = null; }
+  if (rate.was) {
+    // The wait is over: say so, and look again right away.
+    rate.was = false;
+    rate.reset = 0;
+    rate.done = "GitHub's rate limit has reset. It's safe to try again. Checking now…";
+    say("GitHub's rate limit has reset. It's safe to try again.");
+    refresh().then(() => { rate.done = rate.reset ? "" : "GitHub's rate limit has reset and everything was rechecked. It's safe to try again."; renderRate(); });
+  }
+  if (rate.done) {
+    box.className = "selfnote ratenote ok";
+    box.hidden = false;
+    box.replaceChildren(
+      el("div", { className: "what" }, el("span", { textContent: rate.done })),
+      el("div", { className: "pbtns" }, button("Dismiss", "ghost", () => { rate.done = ""; renderRate(); })));
+  } else {
+    box.hidden = true;
+  }
+}
+
 // ---------- refreshing the download totals ----------
 
 function syncStatsButton() {
@@ -483,6 +539,7 @@ async function refreshCounts() {
   } finally {
     b.disabled = false;
     render();
+    checkRate();
   }
 }
 $("refresh-stats").onclick = refreshCounts;
@@ -810,6 +867,7 @@ async function quietCheck() {
     const fresh = apps.filter((a) => before[a.id] && releases[a.id]?.tag !== before[a.id] && updatePrompt(a));
     if (fresh.length) say(`New release: ${fresh.map((a) => `${a.name} ${releases[a.id].tag}`).join(", ")}`);
     render();
+    checkRate();
   } catch (e) {
     /* offline: try again at the next tick */
   }
