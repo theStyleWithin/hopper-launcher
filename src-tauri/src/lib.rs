@@ -239,7 +239,7 @@ impl SourceError {
         match self {
             SourceError::NoRelease => "No release published yet".into(),
             SourceError::Gone => "No longer available".into(),
-            SourceError::RateLimited => "GitHub rate limit reached, try again later".into(),
+            SourceError::RateLimited => "Rate limit reached".into(),
             SourceError::Unreachable(_) => "Can't reach GitHub right now".into(),
             SourceError::Other(m) => m.clone(),
         }
@@ -248,9 +248,59 @@ impl SourceError {
 
 /// GitHub marks a real rate limit with headers. Any other "403" (a gateway, a captive portal, a block)
 /// just means we could not get through.
+// ---------- GitHub's rate limit ----------
+//
+// Without signing in GitHub allows only a limited number of questions per hour. When it says "enough", it
+// also says when the limit resets. That moment is remembered so the launcher can show a countdown, stop
+// asking until then (every extra question would be wasted), and try again by itself afterwards.
+
+static RATE_RESET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Used when GitHub refuses without saying when to come back.
+const RATE_FALLBACK_SECS: u64 = 15 * 60;
+/// Never believe a wait longer than this.
+const RATE_MAX_SECS: u64 = 2 * 60 * 60;
+
+fn note_rate_limit(resp: &ureq::Response) -> SourceError {
+    let now = unix_now();
+    let reset = resp
+        .header("x-ratelimit-reset")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|r| *r > now)
+        .or_else(|| resp.header("retry-after").and_then(|v| v.trim().parse::<u64>().ok()).map(|secs| now + secs.max(1)))
+        .unwrap_or(now + RATE_FALLBACK_SECS);
+    RATE_RESET.store(reset.min(now + RATE_MAX_SECS), std::sync::atomic::Ordering::SeqCst);
+    SourceError::RateLimited
+}
+
+/// When the limit lifts (Unix seconds), if GitHub has told us to wait and that time has not come yet.
+fn rate_limited_until() -> Option<u64> {
+    let reset = RATE_RESET.load(std::sync::atomic::Ordering::SeqCst);
+    if reset > unix_now() {
+        Some(reset)
+    } else {
+        if reset != 0 {
+            RATE_RESET.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+        None
+    }
+}
+
+#[derive(Serialize, Debug)]
+struct RateStatus {
+    /// When GitHub will answer again, or None when nothing is limited.
+    reset_at: Option<u64>,
+    /// The computer's clock, so the screen's countdown does not depend on the screen's own clock being right.
+    now: u64,
+}
+
+#[tauri::command]
+fn rate_limit_status() -> RateStatus {
+    RateStatus { reset_at: rate_limited_until(), now: unix_now() }
+}
+
 fn forbidden(resp: &ureq::Response) -> SourceError {
     if resp.header("x-ratelimit-remaining") == Some("0") || resp.header("retry-after").is_some() {
-        SourceError::RateLimited
+        note_rate_limit(resp)
     } else {
         SourceError::Unreachable("access denied (HTTP 403)".into())
     }
@@ -262,7 +312,7 @@ fn repo_exists(repo: &str) -> Result<bool, SourceError> {
     match http().get(&url).set("User-Agent", "hopper-launcher").set("Accept", "application/vnd.github+json").call() {
         Ok(_) => Ok(true),
         Err(ureq::Error::Status(404 | 451, _)) => Ok(false),
-        Err(ureq::Error::Status(429, _)) => Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(429, r)) => Err(note_rate_limit(&r)),
         Err(ureq::Error::Status(403, r)) => Err(forbidden(&r)),
         Err(ureq::Error::Status(code, _)) => Err(SourceError::Unreachable(format!("HTTP {code}"))),
         Err(other) => Err(SourceError::Unreachable(other.to_string())),
@@ -276,6 +326,10 @@ fn latest_release(repo: &str) -> Result<Release, String> {
 fn latest_release_typed(repo: &str) -> Result<Release, SourceError> {
     let url = format!("{}/repos/{repo}/releases/latest", api_base());
     let cached = cached_release(repo);
+    if rate_limited_until().is_some() {
+        // GitHub said wait: use what was already known, and ask nothing until the limit lifts.
+        return cached.map(|(_, r)| r).ok_or(SourceError::RateLimited);
+    }
     let mut req = http().get(&url)
         .set("User-Agent", "hopper-launcher")
         .set("Accept", "application/vnd.github+json");
@@ -289,7 +343,7 @@ fn latest_release_typed(repo: &str) -> Result<Release, SourceError> {
             return Err(if repo_exists(repo)? { SourceError::NoRelease } else { SourceError::Gone });
         }
         Err(ureq::Error::Status(451, _)) => return Err(SourceError::Gone),
-        Err(ureq::Error::Status(429, _)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(429, r)) => return Err(note_rate_limit(&r)),
         Err(ureq::Error::Status(403, r)) => return Err(forbidden(&r)),
         Err(ureq::Error::Status(code, _)) => return Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
         Err(other) => return Err(SourceError::Unreachable(other.to_string())),
@@ -611,6 +665,9 @@ fn sum_downloads(releases: &[CountedRelease]) -> u64 {
 static PAGE_CACHE: std::sync::Mutex<Option<HashMap<String, (String, Vec<CountedRelease>)>>> = std::sync::Mutex::new(None);
 
 fn fetch_release_page(url: &str) -> Result<Vec<CountedRelease>, SourceError> {
+    if rate_limited_until().is_some() {
+        return Err(SourceError::RateLimited);
+    }
     let cached = PAGE_CACHE.lock().ok().and_then(|c| c.as_ref().and_then(|m| m.get(url).cloned()));
     let mut req = http().get(url).set("User-Agent", "hopper-launcher").set("Accept", "application/vnd.github+json");
     if let Some((etag, _)) = &cached {
@@ -618,7 +675,7 @@ fn fetch_release_page(url: &str) -> Result<Vec<CountedRelease>, SourceError> {
     }
     let resp = match req.call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(429, _)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(429, r)) => return Err(note_rate_limit(&r)),
         Err(ureq::Error::Status(403, r)) => return Err(forbidden(&r)),
         Err(ureq::Error::Status(404 | 451, _)) => return Err(SourceError::Gone),
         Err(ureq::Error::Status(code, _)) => return Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
@@ -2649,6 +2706,7 @@ pub fn run() {
             open_launcher_releases,
             restart_launcher,
             refresh_downloads,
+            rate_limit_status,
             launch_app,
             uninstall_app,
             skip_update,
@@ -3067,7 +3125,7 @@ mod tests {
             r.insert("/repos/me/broken/releases/latest".into(), status("503"));
             r.insert("/repos/me/denied/releases/latest".into(), status("403"));
         }
-        let apps: Vec<AppEntry> = ["ok", "norelease", "missing", "blocked", "limited", "broken", "denied"]
+        let apps: Vec<AppEntry> = ["ok", "norelease", "missing", "blocked", "broken", "denied"]
             .iter()
             .map(|n| AppEntry { repo: format!("me/{n}"), ..entry(n, n) })
             .collect();
@@ -3080,12 +3138,10 @@ mod tests {
         assert_eq!(src(&first, "norelease"), Source::NoRelease);
         assert_eq!(src(&first, "missing"), Source::Trouble, "one report is not enough");
         assert_eq!(src(&first, "blocked"), Source::Trouble);
-        assert_eq!(src(&first, "limited"), Source::Ok);
-        assert!(first.iter().find(|i| i.id == "limited").unwrap().error.as_deref().unwrap().contains("rate limit"));
         assert_eq!(src(&first, "broken"), Source::Trouble);
         // a plain 403 (no rate-limit headers) is "could not get through", not "rate limited"
         assert_eq!(src(&first, "denied"), Source::Trouble);
-        assert!(!first.iter().find(|i| i.id == "denied").unwrap().error.as_deref().unwrap().contains("rate limit"));
+        assert!(!first.iter().find(|i| i.id == "denied").unwrap().error.as_deref().unwrap().contains("Rate limit"));
         assert_eq!(first.iter().find(|i| i.id == "broken").unwrap().error.as_deref(), Some("Can't reach GitHub right now"));
         assert_eq!(first.iter().find(|i| i.id == "ok").unwrap().tag.as_deref(), Some("v1.0.0"));
 
@@ -3096,6 +3152,15 @@ mod tests {
         assert_eq!(src(&day2, "ok"), Source::Ok);
 
         assert_eq!(src(&check_all(&apps, &dev, t0 + 8 * DAY), "broken"), Source::Gone);
+
+        // A rate limit is not a failure of the repository: it keeps its place and says why, and GitHub's
+        // answer is remembered for everyone (checked on its own, because it pauses every other question).
+        let limited = vec![AppEntry { repo: "me/limited".into(), ..entry("limited", "limited") }];
+        let lim = check_all(&limited, &dev, t0);
+        assert_eq!(src(&lim, "limited"), Source::Ok);
+        assert!(lim[0].error.as_deref().unwrap().contains("Rate limit"));
+        assert!(rate_limit_status().reset_at.is_some());
+        RATE_RESET.store(0, std::sync::atomic::Ordering::SeqCst);
 
         // Everything comes back: the marks are cleared.
         {
@@ -3382,6 +3447,39 @@ mod tests {
             std::env::remove_var(k);
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rate_limit_is_remembered_with_its_reset_time_and_nothing_is_asked_until_then() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_API_BASE", format!("http://127.0.0.1:{port}"));
+        RATE_RESET.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(rate_limit_status().reset_at, None);
+
+        let reset = unix_now() + 600;
+        routes.lock().unwrap().insert("/repos/me/app/releases/latest".into(), format!("__LIMIT__:{reset}").into_bytes());
+        assert!(matches!(latest_release_typed("me/app"), Err(SourceError::RateLimited)));
+        assert_eq!(rate_limit_status().reset_at, Some(reset), "the reset time GitHub gave must be shown");
+        assert_eq!(SourceError::RateLimited.message(), "Rate limit reached");
+
+        // While limited, nothing is asked: even a healthy server is not contacted.
+        routes.lock().unwrap().insert("/repos/me/app/releases/latest".into(), release_json());
+        assert!(matches!(latest_release_typed("me/app"), Err(SourceError::RateLimited)));
+        assert!(matches!(fetch_download_total("me/app"), Err(SourceError::RateLimited)));
+
+        // Once the time has passed, the launcher asks again and the limit is forgotten.
+        RATE_RESET.store(unix_now().saturating_sub(5).max(1), std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(latest_release_typed("me/app").unwrap().tag_name, "v1.0.0");
+        assert_eq!(rate_limit_status().reset_at, None);
+
+        // A "retry after N seconds" answer counts too, and a silly wait is cut down.
+        routes.lock().unwrap().insert("/repos/me/app/releases/latest".into(), b"__STATUS__:429".to_vec());
+        assert!(matches!(latest_release_typed("me/app"), Err(SourceError::RateLimited)));
+        let until = rate_limit_status().reset_at.expect("a 429 must start a countdown");
+        assert!(until >= unix_now() + RATE_FALLBACK_SECS - 5 && until <= unix_now() + RATE_MAX_SECS, "{until}");
+        RATE_RESET.store(0, std::sync::atomic::Ordering::SeqCst);
+        std::env::remove_var("HOPPER_API_BASE");
     }
 
     #[test]
@@ -3768,6 +3866,7 @@ mod tests {
 
     /// A tiny local HTTP server whose responses can be swapped while it runs.
     fn serve() -> (u16, Routes) {
+        RATE_RESET.store(0, std::sync::atomic::Ordering::SeqCst); // a test never inherits another test's countdown
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
@@ -3795,6 +3894,10 @@ mod tests {
                         LIST_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     match routes.lock().unwrap().get(&path) {
+                        Some(body) if body.starts_with(b"__LIMIT__:") => {
+                            let reset = String::from_utf8_lossy(&body[10..]).trim().to_string();
+                            let _ = write!(s, "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        }
                         Some(body) if body.starts_with(b"__STATUS__:") => {
                             let code = String::from_utf8_lossy(&body[11..]).trim().to_string();
                             let _ = write!(s, "HTTP/1.1 {code} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");

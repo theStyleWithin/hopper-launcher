@@ -72,6 +72,9 @@ static ISSUE_CACHE: std::sync::Mutex<Option<HashMap<String, (String, Vec<WallIte
 
 /// Open issues, most recently active first. Asks "only if changed" so refreshing costs next to nothing.
 fn fetch_issues(repo: &str) -> Result<Vec<WallItem>, SourceError> {
+    if rate_limited_until().is_some() {
+        return Err(SourceError::RateLimited); // GitHub said wait: asking again would only waste the next hour
+    }
     let url = format!("{}/repos/{repo}/issues?state=open&sort=updated&per_page={PER_REPO}", api_base());
     let cached = ISSUE_CACHE.lock().ok().and_then(|c| c.as_ref().and_then(|m| m.get(&url).cloned()));
     let mut req = http().get(&url).set("User-Agent", "hopper-launcher").set("Accept", "application/vnd.github+json");
@@ -80,7 +83,7 @@ fn fetch_issues(repo: &str) -> Result<Vec<WallItem>, SourceError> {
     }
     let resp = match req.call() {
         Ok(r) => r,
-        Err(ureq::Error::Status(429, _)) => return Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(429, r)) => return Err(note_rate_limit(&r)),
         Err(ureq::Error::Status(403, r)) => return Err(forbidden(&r)),
         Err(ureq::Error::Status(404 | 410 | 451, _)) => return Err(SourceError::Gone),
         Err(ureq::Error::Status(code, _)) => return Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
@@ -217,7 +220,7 @@ fn fetch_discussions(repo: &str) -> Result<Option<Vec<WallItem>>, SourceError> {
             Ok(Some(parse_atom(&text, repo)))
         }
         Err(ureq::Error::Status(404 | 410, _)) => Ok(None),
-        Err(ureq::Error::Status(429, _)) => Err(SourceError::RateLimited),
+        Err(ureq::Error::Status(429, r)) => Err(note_rate_limit(&r)),
         Err(ureq::Error::Status(code, _)) => Err(SourceError::Unreachable(format!("GitHub error (HTTP {code})"))),
         Err(other) => Err(SourceError::Unreachable(other.to_string())),
     }
