@@ -145,6 +145,15 @@ page says which systems it supports, and the launcher only shows the builds that
   launching. When the time is up the note says "It's safe to try again" and the launcher rechecks by itself.
 
   ![A note at the top counting down to the rate limit reset.](docs/images/rate-limit.png)
+- **Archive status light.** While the Internet Archive backup is switched on, a third light ("Archive:
+  operational / trouble") sits beside the internet and GitHub lights. When it is off the launcher doesn't
+  contact archive.org at all, and the light is hidden.
+- **Rollback from the Internet Archive, just this once.** If GitHub is rate limiting you when you press ⟲ to
+  roll back, the launcher offers the Internet Archive instead: it lists the older versions kept there (with
+  dates), checks the file against the archive's checksum, installs it and keeps your settings. It is only for
+  that one rollback. No setting is changed, the backup stays switched off if it was, and the next thing the
+  launcher does goes back to GitHub. (If the GitHub list fails because of the limit, the same offer appears
+  there.)
 - **Switching builds.** If an app comes in more than one build (for example an AppImage and an AMD AppImage),
   its dropdown lets you switch to another one. The launcher remembers which kind you chose and keeps updating
   that kind, and an AppImage's own settings folder moves along with the program so the app picks up where you

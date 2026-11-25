@@ -135,7 +135,7 @@ function tile(app) {
     // In the glass look the label is a compact cross (so full names still fit); the words are still there for hover and screen readers.
     const x = button(glass ? "✕" : word, "x", () => uninstall(app), working);
     if (glass) { x.title = word; x.setAttribute("aria-label", `${word} ${app.name}`); }
-    const hist = button("⟲", "x", () => openVersions(appVersions(app)), working);
+    const hist = button("⟲", "x", () => openRollback(app), working);
     hist.title = "Versions and rollback: go back to an older version";
     hist.setAttribute("aria-label", `Versions and rollback for ${app.name}`);
     top.append(hist, x);
@@ -248,14 +248,15 @@ async function loadApps() {
   render();
 }
 
-async function install(app, file, tag = null) {
+async function install(app, file, tag = null, fromArchive = false) {
   busy.add(app.id);
-  say(`Downloading ${app.name}${tag ? " " + tag : ""}…`);
+  say(`Downloading ${app.name}${tag ? " " + tag : ""}${fromArchive ? " from the Internet Archive" : ""}…`);
   render();
   try {
-    const r = await invoke("install_app", { id: app.id, file, tag });
+    const r = fromArchive ? await invoke("install_from_archive", { id: app.id, file }) : await invoke("install_app", { id: app.id, file, tag });
+    const via = fromArchive ? " from the Internet Archive (one time; the launcher is back on GitHub)" : "";
     if (r.handed_off) say(`${app.name} ${r.tag}: opened its installer. Finish the setup there.`);
-    else say(`${app.name} ${r.tag} installed` + (r.verified ? " (checksum verified)" : " (no checksum was published)"));
+    else say(`${app.name} ${r.tag} installed${via}` + (r.verified ? " (checksum verified)" : " (no checksum was published)"));
   } catch (e) {
     say(String(e), true);
   } finally {
@@ -284,7 +285,39 @@ function appVersions(app) {
     busy: () => busy.has(app.id),
     install: (file, tag) => install(app, file, tag),
     name: app.name,
+    fallback: app.archive ? () => openVersions(archiveVersions(app)) : null,
   };
+}
+
+/** The same list, read from the Internet Archive, for ONE rollback. Nothing is switched on or remembered. */
+function archiveVersions(app) {
+  return {
+    title: `${app.name}: versions (Internet Archive)`,
+    note: "This is a one-time use of the Internet Archive for this rollback. No setting is changed: afterwards the launcher goes straight back to GitHub. The file is checked against the archive's checksum, and your settings and data are kept.",
+    current: app.version,
+    load: () => invoke("archive_versions", { id: app.id }),
+    busy: () => busy.has(app.id),
+    install: (file) => install(app, file, null, true),
+    name: app.name,
+    fallback: null,
+  };
+}
+
+/** The ⟲ button. If GitHub is rate limiting right now, offer the Internet Archive for this one rollback. */
+async function openRollback(app) {
+  let limit = null;
+  try { const s = await invoke("rate_limit_status"); if (s.reset_at) limit = s; } catch (e) {}
+  if (!limit || !app.archive) { openVersions(appVersions(app)); return; }
+  const mins = Math.max(1, Math.ceil((limit.reset_at - limit.now) / 60));
+  const sheet = el("div", { className: "sheet" });
+  sheet.append(el("h2", { id: "versions-title", textContent: `${app.name}: roll back` }));
+  sheet.append(el("p", { textContent: `GitHub is rate limiting you right now (it resets in about ${mins} minute${mins > 1 ? "s" : ""}), so its list of older versions may not load. If you need to roll back immediately, you can get the older version from the Internet Archive instead. That is for this one rollback only: nothing is switched on, and the launcher goes back to GitHub afterwards.` }));
+  sheet.append(el("div", { className: "foot pbtns" },
+    button("Wait and use GitHub", "ghost", () => openVersions(appVersions(app))),
+    button("Use the Internet Archive this once", "go alt", () => openVersions(archiveVersions(app))),
+    button("Cancel", "ghost", () => versionsDialog.close())));
+  versionsDialog.replaceChildren(sheet);
+  if (!versionsDialog.open) versionsDialog.showModal();
 }
 
 /** Lists every published version that has a build for this device, so the user can go back to one. */
@@ -317,6 +350,10 @@ async function openVersions(t) {
     }));
   } catch (e) {
     body.replaceChildren(el("p", { className: "bgwarn", textContent: String(e) }));
+    if (t.fallback && /rate limit/i.test(String(e))) {
+      body.append(el("p", { textContent: "GitHub is rate limiting you, but the Internet Archive keeps older versions too. You can use it for this one rollback; nothing is switched on or remembered." }),
+        button("Use the Internet Archive this once", "go alt", () => t.fallback()));
+    }
   }
 }
 
@@ -381,7 +418,18 @@ function renderStatus() {
   gh.className = "pill " + tone;
   gh.querySelector("b").textContent = "GitHub: " + word;
   gh.title = (n.github.description || "GitHub's status") + " (click to open githubstatus.com)";
+  // The Internet Archive, shown only while its backup is switched on (so nothing is contacted otherwise).
+  const ia = $("pill-ia");
+  const a = n.archive || { indicator: "off" };
+  ia.hidden = a.indicator === "off";
+  if (!ia.hidden) {
+    const tone = a.indicator === "none" ? ["ok", "operational"] : a.indicator === "major" ? ["bad", "trouble"] : ["off", "unknown"];
+    ia.className = "pill " + tone[0];
+    ia.querySelector("b").textContent = "Archive: " + tone[1];
+    ia.title = (a.description || "The Internet Archive") + " (click to open the developer's Internet Archive page)";
+  }
 }
+$("pill-ia").onclick = (e) => { e.preventDefault(); invoke("open_archive_profile").catch((err) => say(String(err), true)); };
 $("pill-gh").onclick = (e) => { e.preventDefault(); invoke("open_github_status_page").catch((err) => say(String(err), true)); };
 window.addEventListener("online", updateStatus);
 window.addEventListener("offline", updateStatus);

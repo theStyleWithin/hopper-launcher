@@ -465,6 +465,22 @@ struct NetworkStatus {
     /// "online", "offline", or "off" (hidden in Settings).
     internet: String,
     github: GithubStatus,
+    /// The Internet Archive: "off" (backup switched off, nothing is contacted), "operational", "trouble" or "unknown".
+    archive: GithubStatus,
+}
+
+/// Is the Internet Archive answering? Only asked while the backup is switched on, so nothing is contacted otherwise.
+fn fetch_archive_status() -> GithubStatus {
+    let state = |i: &str, d: &str| GithubStatus { indicator: i.into(), description: d.into() };
+    if !load_settings().archive_enabled {
+        return state("off", "The Internet Archive backup is switched off");
+    }
+    match http().get(&format!("{}/", archive_base())).set("User-Agent", "hopper-launcher").timeout(std::time::Duration::from_secs(8)).call() {
+        Ok(_) => state("none", "The Internet Archive is answering"),
+        Err(ureq::Error::Status(code, _)) if code >= 500 => state("major", "The Internet Archive is having trouble"),
+        Err(ureq::Error::Status(_, _)) => state("none", "The Internet Archive is answering"),
+        Err(_) => state("major", "The Internet Archive did not answer"),
+    }
 }
 
 /// A bare connection to a public DNS server, with no data sent. Says whether the user's internet works.
@@ -481,11 +497,12 @@ fn tcp_probe() -> bool {
 fn check_network() -> NetworkStatus {
     let github = fetch_github_status();
     if github.indicator != "unknown" || tcp_probe() {
-        return NetworkStatus { internet: "online".into(), github };
+        return NetworkStatus { internet: "online".into(), github, archive: fetch_archive_status() };
     }
     NetworkStatus {
         internet: "offline".into(),
         github: GithubStatus { indicator: "unknown".into(), description: "No internet connection".into() },
+        archive: GithubStatus { indicator: if load_settings().archive_enabled { "unknown" } else { "off" }.into(), description: "No internet connection".into() },
     }
 }
 
@@ -494,7 +511,7 @@ fn check_network() -> NetworkStatus {
 #[tauri::command]
 async fn network_status() -> Result<NetworkStatus, String> {
     if !load_settings().show_status {
-        return Ok(NetworkStatus { internet: "off".into(), github: GithubStatus { indicator: "off".into(), description: "Hidden in Settings".into() } });
+        return Ok(NetworkStatus { internet: "off".into(), github: GithubStatus { indicator: "off".into(), description: "Hidden in Settings".into() }, archive: GithubStatus { indicator: "off".into(), description: "Hidden in Settings".into() } });
     }
     tauri::async_runtime::spawn_blocking(check_network).await.map_err(|e| e.to_string())
 }
@@ -1022,12 +1039,17 @@ fn release_by_tag(repo: &str, tag: &str) -> Result<Release, String> {
     if !valid_tag(tag) {
         return Err("That is not a valid version name.".into());
     }
+    if rate_limited_until().is_some() {
+        return Err(SourceError::RateLimited.message());
+    }
     let url = format!("{}/repos/{repo}/releases/tags/{tag}", api_base());
     let resp = http().get(&url)
         .set("User-Agent", "hopper-launcher")
         .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| match e {
+            ureq::Error::Status(429, r) => note_rate_limit(&r).message(),
+            ureq::Error::Status(403, r) => forbidden(&r).message(),
             ureq::Error::Status(404, _) => format!("Version {tag} is no longer published."),
             ureq::Error::Status(code, _) => format!("GitHub error (HTTP {code})"),
             other => format!("Can't reach GitHub right now ({other})"),
@@ -1064,6 +1086,9 @@ fn list_versions_blocking(app: &AppEntry) -> Result<Vec<VersionInfo>, String> {
 }
 
 fn list_versions_for(repo: &str) -> Result<Vec<VersionInfo>, String> {
+    if rate_limited_until().is_some() {
+        return Err(SourceError::RateLimited.message());
+    }
     let dev = device::detect();
     let url = format!("{}/repos/{repo}/releases?per_page=30", api_base());
     let resp = http().get(&url)
@@ -1071,6 +1096,8 @@ fn list_versions_for(repo: &str) -> Result<Vec<VersionInfo>, String> {
         .set("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| match e {
+            ureq::Error::Status(429, r) => note_rate_limit(&r).message(),
+            ureq::Error::Status(403, r) => forbidden(&r).message(),
             ureq::Error::Status(code, _) => format!("GitHub error (HTTP {code})"),
             other => format!("Can't reach GitHub right now ({other})"),
         })?;
@@ -1136,20 +1163,31 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
         None => false,
     };
 
-    // The new version is in hand and checked. Replace the old program files only:
-    // anything else in the folder (settings a portable build keeps beside itself,
-    // an AppImage's .home/.config folders) belongs to the app and stays untouched.
+    finish_install(app, &release.tag_name, file, &build.kind, &part_dir, &part_file, old_path, ignored, verified)
+}
+
+/// The new file is in hand and checked: put it in place, remember it, and (for system installers) hand it over.
+/// Only the old program files are replaced: anything else in the app's folder (an AppImage's .home/.config
+/// folders, settings a portable build keeps beside itself) belongs to the app and is kept, or moved along
+/// when the program's file name changes.
+#[allow(clippy::too_many_arguments)]
+fn finish_install(app: &AppEntry, tag: &str, file: &str, kind: &str, part_dir: &Path, part_file: &Path, old_path: Option<PathBuf>, ignored: Option<String>, verified: bool) -> Result<InstallResult, String> {
+    let app_dir = data_dir().join("apps").join(&app.id);
+    let fail = |msg: String| -> String {
+        let _ = fs::remove_dir_all(part_dir);
+        msg
+    };
     remove_old_builds(&app_dir);
 
-    let handed_off = is_handoff(&build.kind);
-    let launch_path = if build.kind == "zip" {
+    let handed_off = is_handoff(kind);
+    let launch_path = if kind == "zip" {
         let target = app_dir.join("app");
         fs::create_dir_all(&target).map_err(|e| fail(e.to_string()))?;
-        unzip(&part_file, &target).map_err(&fail)?;
+        unzip(part_file, &target).map_err(&fail)?;
         find_exe(&target).ok_or_else(|| fail("The zip does not contain a program (.exe)".into()))?
     } else {
         let dest = app_dir.join(file);
-        fs::rename(&part_file, &dest).map_err(|e| fail(e.to_string()))?;
+        fs::rename(part_file, &dest).map_err(|e| fail(e.to_string()))?;
         make_executable(&dest).map_err(&fail)?;
         // Switching to a different file (say an AMD build): an AppImage keeps its own settings in folders named
         // after the file, so they move to the new name and the app picks up where it left off.
@@ -1165,7 +1203,7 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
         }
         dest
     };
-    let _ = fs::remove_dir_all(&part_dir);
+    let _ = fs::remove_dir_all(part_dir);
 
     let mut state = load_state();
     #[cfg(target_os = "android")]
@@ -1179,11 +1217,11 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
             .ok_or("Could not read the app's package name")?;
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: ignored.clone(), build: Some(file.to_string()) },
+            InstalledApp { tag: tag.to_string(), path: launch_path.clone(), folder: false, adopted: false, package: Some(pkg), ignored_version: ignored.clone(), build: Some(file.to_string()) },
         );
         save_state(&state)?;
         android_call("installApk", serde_json::json!({ "path": path_text }))?;
-        return Ok(InstallResult { tag: release.tag_name, verified, handed_off: true });
+        return Ok(InstallResult { tag: tag.to_string(), verified, handed_off: true });
     }
     if handed_off {
         // The system's installer owns this app from here on.
@@ -1193,11 +1231,11 @@ fn install_blocking(app: &AppEntry, file: &str, tag: Option<&str>) -> Result<Ins
     } else {
         state.insert(
             app.id.clone(),
-            InstalledApp { tag: release.tag_name.clone(), path: launch_path, folder: build.kind == "zip", adopted: false, package: None, ignored_version: ignored.clone(), build: Some(file.to_string()) },
+            InstalledApp { tag: tag.to_string(), path: launch_path, folder: kind == "zip", adopted: false, package: None, ignored_version: ignored.clone(), build: Some(file.to_string()) },
         );
         save_state(&state)?;
     }
-    Ok(InstallResult { tag: release.tag_name, verified, handed_off })
+    Ok(InstallResult { tag: tag.to_string(), verified, handed_off })
 }
 
 // ---------- local profiles ----------
@@ -1884,7 +1922,9 @@ impl<W: Write, F: FnMut(u64)> Write for ArchiveWriter<W, F> {
 }
 
 /// Downloads one file of an item by hand, checks it, and saves it in the Downloads folder.
-fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMut(u64, u64)) -> Result<ArchiveDownload, String> {
+/// Downloads one file of an app's Internet Archive item into `dir` and checks it against the archive's
+/// checksum (and the developer's SHA256SUMS when it lists the file). Returns where it landed and what matched.
+fn archive_fetch(app: &AppEntry, file: &str, dir: &Path, mut progress: impl FnMut(u64, u64)) -> Result<(PathBuf, Vec<String>), String> {
     let item = app.archive.as_deref().ok_or_else(|| format!("{} has no Internet Archive item yet", app.name))?;
     let meta = fetch_archive_metadata(item)?;
     let entries = meta["files"].as_array().cloned().unwrap_or_default();
@@ -1898,9 +1938,8 @@ fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMu
     let total = entry.get("size").and_then(json_number).unwrap_or(0).max(0) as u64;
     let want_sha1 = entry["sha1"].as_str().map(str::to_lowercase);
 
-    let dir = save_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    let dest = unique_path(&dir, &base);
+    fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let dest = unique_path(dir, &base);
     let part = dest.with_file_name(format!("{}.part", dest.file_name().and_then(|n| n.to_str()).unwrap_or("download")));
 
     let url = format!("{}/download/{item}/{}", archive_base(), percent_encode(file));
@@ -1952,6 +1991,12 @@ fn archive_download_blocking(app: &AppEntry, file: &str, mut progress: impl FnMu
     }
 
     fs::rename(&part, &dest).map_err(|e| e.to_string())?;
+    Ok((dest, verified))
+}
+
+fn archive_download_blocking(app: &AppEntry, file: &str, progress: impl FnMut(u64, u64)) -> Result<ArchiveDownload, String> {
+    let base = file.rsplit('/').next().unwrap_or(file).to_string();
+    let (dest, verified) = archive_fetch(app, file, &save_dir(), progress)?;
     if base.to_lowercase().ends_with(".appimage") {
         make_executable(&dest)?;
     }
@@ -2433,6 +2478,99 @@ async fn refresh_downloads() -> Result<Vec<FreshCount>, String> {
     tauri::async_runtime::spawn_blocking(move || refresh_downloads_blocking(&apps, unix_now())).await.map_err(|e| e.to_string())
 }
 
+// ---------- a one-time rollback from the Internet Archive ----------
+//
+// Used only when the user asks for it for one rollback, typically because GitHub is rate limiting them. It
+// changes no setting: the next thing the launcher does goes back to GitHub as usual.
+
+/// "YYYY-MM-DD" for a Unix time.
+fn ymd(secs: i64) -> String {
+    let days = secs.div_euclid(86_400) + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Every version found on the app's Internet Archive item that has a build for this device, newest first.
+fn archive_versions_blocking(app: &AppEntry) -> Result<Vec<VersionInfo>, String> {
+    let item = app.archive.as_deref().ok_or_else(|| format!("{} has no Internet Archive item yet", app.name))?;
+    let meta = fetch_archive_metadata(item)?;
+    let dev = device::detect();
+    let mut by_version: Vec<(String, Option<i64>, Vec<Asset>)> = Vec::new();
+    for f in archive_files_from(&meta).into_iter().filter(|f| f.group == "program" && !f.debug) {
+        let Some(version) = f.version.clone() else { continue };
+        let base = f.name.rsplit('/').next().unwrap_or(&f.name).to_string();
+        let asset = Asset { name: base, browser_download_url: String::new(), size: f.size };
+        match by_version.iter_mut().find(|(v, _, _)| *v == version) {
+            Some((_, m, list)) => {
+                *m = (*m).max(f.mtime);
+                list.push(asset);
+            }
+            None => by_version.push((version, f.mtime, vec![asset])),
+        }
+    }
+    let mut out: Vec<VersionInfo> = by_version
+        .into_iter()
+        .filter_map(|(version, mtime, assets)| {
+            let builds = builds_for(&assets, &dev.os, &dev.arch);
+            (!builds.is_empty()).then(|| VersionInfo { tag: format!("v{version}"), date: mtime.map(ymd), prerelease: false, builds })
+        })
+        .collect();
+    out.sort_by(|a, b| version_key(&Some(b.tag.trim_start_matches('v').to_string())).cmp(&version_key(&Some(a.tag.trim_start_matches('v').to_string()))));
+    Ok(out)
+}
+
+/// Installs one file from the app's Internet Archive item, the same way a GitHub install would: checked
+/// against the archive's checksum, old program files replaced, the app's own settings kept.
+fn install_from_archive_blocking(app: &AppEntry, file: &str) -> Result<InstallResult, String> {
+    if cfg!(target_os = "android") {
+        return Err("Rolling back from the Internet Archive isn't available on Android yet.".into());
+    }
+    let dev = device::detect();
+    let base = file.rsplit('/').next().unwrap_or(file).to_string();
+    let version = version_from_name(&base).ok_or("Can't tell which version that file is.")?;
+    let build = builds_for(&[Asset { name: base.clone(), browser_download_url: String::new(), size: 0 }], &dev.os, &dev.arch)
+        .into_iter()
+        .next()
+        .ok_or_else(|| format!("{base} is not a build for this device"))?;
+    let before = load_state().get(&app.id).filter(|s| !s.adopted).cloned();
+    let old_path = before.as_ref().map(|b| b.path.clone());
+    // Keep the update prompt quiet for the newest release already known, as with any rollback.
+    let ignored = cached_release(&app.repo)
+        .map(|(_, r)| r.tag_name)
+        .filter(|t| version_key(&Some(t.trim_start_matches('v').to_string())) > version_key(&Some(version.clone())));
+
+    let app_dir = data_dir().join("apps").join(&app.id);
+    let part_dir = app_dir.join(".part");
+    let _ = fs::remove_dir_all(&part_dir);
+    let (part_file, verified) = match archive_fetch(app, file, &part_dir, |_, _| {}) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&part_dir);
+            return Err(e);
+        }
+    };
+    finish_install(app, &format!("v{version}"), &base, &build.kind, &part_dir, &part_file, old_path, ignored, !verified.is_empty())
+}
+
+#[tauri::command]
+async fn archive_versions(id: String) -> Result<Vec<VersionInfo>, String> {
+    let app = find_app(&id)?;
+    tauri::async_runtime::spawn_blocking(move || archive_versions_blocking(&app)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn install_from_archive(id: String, file: String) -> Result<InstallResult, String> {
+    let app = find_app(&id)?;
+    tauri::async_runtime::spawn_blocking(move || install_from_archive_blocking(&app, &file)).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn archive_list() -> Result<Vec<ArchiveItem>, String> {
     tauri::async_runtime::spawn_blocking(archive_overview).await.map_err(|e| e.to_string())?
@@ -2714,6 +2852,8 @@ pub fn run() {
             check_releases,
             install_app,
             list_versions,
+            archive_versions,
+            install_from_archive,
             check_launcher,
             list_profiles,
             create_profile,
@@ -2968,6 +3108,113 @@ mod tests {
         assert!(!valid_item("") && !valid_item("a/b") && !valid_item("a b") && !valid_item("a?x=1") && !valid_item("../x"));
         assert_eq!(percent_encode("My App 1.0 (x).appimage"), "My%20App%201.0%20%28x%29.appimage");
         assert_eq!(percent_encode("v1/a-b_c.d~e"), "v1/a-b_c.d~e");
+    }
+
+    #[test]
+    fn dates_are_written_year_month_day() {
+        assert_eq!(ymd(0), "1970-01-01");
+        assert_eq!(ymd(951_782_400), "2000-02-29");
+        assert_eq!(ymd(1_767_225_600), "2026-01-01");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_one_time_rollback_from_the_internet_archive_installs_checked_files_and_changes_no_setting() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-iarollback-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let data = root.join("data");
+        std::env::set_var("HOPPER_DATA_DIR", &data);
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_ARCHIVE_BASE", format!("http://127.0.0.1:{port}"));
+        let app = AppEntry { archive: Some("test-item".into()), repo: "me/tool".into(), ..entry("tool", "Tool") };
+
+        let new: &[u8] = b"#!/bin/sh\necho new\n";
+        let old: &[u8] = b"#!/bin/sh\necho old\n";
+        let sha1 = |b: &[u8]| to_hex(&<sha1::Sha1 as Digest>::digest(b));
+        let publish = |old_sha1: &str| {
+            let mut r = routes.lock().unwrap();
+            r.clear();
+            r.insert(
+                "/metadata/test-item".into(),
+                item_json(&[
+                    ("Tool-1.2.0-x86_64.appimage", "20", &sha1(new)),
+                    ("Tool-1.1.0-x86_64.appimage", "20", old_sha1),
+                    ("Tool-1.0.0-win-setup.exe", "5", "x"),
+                    ("Tool-1.2.0-x86_64-debug.appimage", "5", "x"),
+                    ("Tool-1.1.0.tar.gz", "5", "x"),
+                    ("test-item_meta.xml", "5", "x"),
+                ]),
+            );
+            r.insert("/download/test-item/Tool-1.2.0-x86_64.appimage".into(), new.to_vec());
+            r.insert("/download/test-item/Tool-1.1.0-x86_64.appimage".into(), old.to_vec());
+        };
+        publish(&sha1(old));
+
+        // Only versions with a real program for this device are offered: not the Windows-only one, the debug
+        // build, the source code or the archive's own files. Newest first, with the date.
+        let versions = archive_versions_blocking(&app).unwrap();
+        assert_eq!(versions.iter().map(|v| v.tag.as_str()).collect::<Vec<_>>(), vec!["v1.2.0", "v1.1.0"]);
+        assert_eq!(versions[0].builds.iter().map(|b| b.file.as_str()).collect::<Vec<_>>(), vec!["Tool-1.2.0-x86_64.appimage"]);
+        assert_eq!(versions[0].date.as_deref(), Some("2026-10-29"));
+
+        // Install the newest, then roll back to the older one from the archive.
+        std::fs::create_dir_all(&data).unwrap();
+        let first = install_from_archive_blocking(&app, "Tool-1.2.0-x86_64.appimage").unwrap();
+        assert_eq!((first.tag.as_str(), first.verified), ("v1.2.0", true));
+        let home = data.join("apps/tool/Tool-1.2.0-x86_64.appimage.home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join("settings.json"), b"mine").unwrap();
+
+        let back = install_from_archive_blocking(&app, "Tool-1.1.0-x86_64.appimage").unwrap();
+        assert_eq!((back.tag.as_str(), back.verified), ("v1.1.0", true));
+        let info = &list_apps_from(vec![app.clone()])[0];
+        assert_eq!((info.installed, info.version.as_deref(), info.build.as_deref()), (true, Some("v1.1.0"), Some("Tool-1.1.0-x86_64.appimage")));
+        assert_eq!(fs::read(data.join("apps/tool/Tool-1.1.0-x86_64.appimage")).unwrap(), old);
+        assert!(!data.join("apps/tool/Tool-1.2.0-x86_64.appimage").exists(), "the newer program was left behind");
+        assert_eq!(fs::read_to_string(data.join("apps/tool/Tool-1.1.0-x86_64.appimage.home/settings.json")).unwrap(), "mine", "the app's settings did not follow");
+        assert!(!data.join("apps/tool/.part").exists(), "a temporary folder was left behind");
+        // It was a one-time use: the Internet Archive backup setting is exactly as it was (off).
+        assert!(!load_settings().archive_enabled);
+
+        // A file that fails the archive's checksum is thrown away and the working install is untouched.
+        publish("0000000000000000000000000000000000000000");
+        let err = install_from_archive_blocking(&app, "Tool-1.1.0-x86_64.appimage").unwrap_err();
+        assert!(err.contains("Internet Archive's checksum"), "{err}");
+        assert_eq!(list_apps_from(vec![app.clone()])[0].version.as_deref(), Some("v1.1.0"));
+        assert!(!data.join("apps/tool/.part").exists());
+        // Only files the item lists, and only builds for this device, can be installed.
+        assert!(install_from_archive_blocking(&app, "../../etc/passwd").is_err());
+        assert!(install_from_archive_blocking(&app, "Tool-1.0.0-win-setup.exe").unwrap_err().contains("not a build for this device"));
+        assert!(install_from_archive_blocking(&entry("none", "None"), "Tool-1.1.0-x86_64.appimage").is_err());
+
+        std::env::remove_var("HOPPER_ARCHIVE_BASE");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_internet_archive_status_is_only_asked_for_while_the_backup_is_on() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("hopper-iastatus-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var("HOPPER_DATA_DIR", &root);
+        let (port, routes) = serve();
+        std::env::set_var("HOPPER_ARCHIVE_BASE", format!("http://127.0.0.1:{port}"));
+        routes.lock().unwrap().insert("/".into(), b"hello".to_vec());
+
+        // Switched off (the default): nothing is contacted.
+        assert_eq!(fetch_archive_status().indicator, "off");
+        set_archive_enabled(true).unwrap();
+        assert_eq!(fetch_archive_status().indicator, "none");
+        routes.lock().unwrap().insert("/".into(), b"__STATUS__:503".to_vec());
+        assert_eq!(fetch_archive_status().indicator, "major");
+        std::env::set_var("HOPPER_ARCHIVE_BASE", "http://127.0.0.1:1");
+        assert_eq!(fetch_archive_status().indicator, "major", "an archive that does not answer is trouble");
+        set_archive_enabled(false).unwrap();
+        assert_eq!(fetch_archive_status().indicator, "off");
+
+        std::env::remove_var("HOPPER_ARCHIVE_BASE");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
